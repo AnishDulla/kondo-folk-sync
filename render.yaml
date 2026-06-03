@@ -1,0 +1,55 @@
+services:
+  - type: web
+    name: kondo-folk-sync
+    env: docker
+    plan: starter
+    autoDeploy: false
+    disk:
+      name: kondo-folk-sync-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: 8787
+      - key: KONDO_FOLK_RELOAD
+        value: false
+      - key: KONDO_FOLK_DB
+        value: /data/kondo_folk_sync.db
+      - key: KONDO_FOLK_DRY_RUN
+        value: false
+      - key: KONDO_FOLK_REVIEW_MODE
+        value: true
+      - key: KONDO_FOLK_AI_PROVIDER
+        value: auto
+      - key: KONDO_FOLK_PROMPT_PATH
+        value: kondo_folk_sync/prompts/crm_analysis.md
+      - key: KONDO_FOLK_RECONCILE_INTERVAL_MINUTES
+        value: 60
+      - key: KONDO_FOLK_WORKER_ENABLED
+        value: true
+      - key: KONDO_FOLK_WORKER_INTERVAL_SECONDS
+        value: 5
+      - key: KONDO_FOLK_WORKER_BATCH_SIZE
+        value: 1
+      - key: KONDO_FOLK_PROCESSING_TIMEOUT_SECONDS
+        value: 120
+      - key: KONDO_FOLK_REQUEST_SPACING_SECONDS
+        value: 0.25
+      - key: KONDO_WEBHOOK_SECRET
+        sync: false
+      - key: KONDO_FOLK_ADMIN_TOKEN
+        sync: false
+      - key: FOLK_API_KEY
+        sync: false
+      - key: FOLK_GROUP_ID
+        sync: false
+      - key: FOLK_GROUP_CLAIMS_PROFESSIONALS_ID
+        sync: false
+      - key: FOLK_GROUP_DISTRIBUTION_PARTNERS_ID
+        sync: false
+      - key: FOLK_GROUP_TPAS_SUBROGATION_ATTORNEYS_ID
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
