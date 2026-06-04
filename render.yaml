@@ -1,13 +1,9 @@
 services:
   - type: web
     name: kondo-folk-sync
-    env: docker
-    plan: starter
+    runtime: docker
+    plan: free
     autoDeploy: false
-    disk:
-      name: kondo-folk-sync-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - key: HOST
         value: 0.0.0.0
@@ -16,7 +12,7 @@ services:
       - key: KONDO_FOLK_RELOAD
         value: false
       - key: KONDO_FOLK_DB
-        value: /data/kondo_folk_sync.db
+        value: /tmp/kondo_folk_sync.db
       - key: KONDO_FOLK_DRY_RUN
         value: false
       - key: KONDO_FOLK_REVIEW_MODE

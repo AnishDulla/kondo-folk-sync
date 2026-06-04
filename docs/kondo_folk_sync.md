@@ -161,13 +161,19 @@ Admin endpoints require `KONDO_FOLK_ADMIN_TOKEN` in live mode. Pass it as either
 
 ## Deployment
 
-The service is deployable as a small always-on web app. The included
-`Dockerfile` and `render.yaml` are set up for Render with a persistent disk:
+The service is deployable as a small web app. The included `Dockerfile` and
+`render.yaml` are set up for an initial Render free-tier deploy:
 
 - app command: `python -m kondo_folk_sync.run`
 - public webhook: `https://<service-host>/webhooks/kondo`
 - admin console: `https://<service-host>/console?token=<admin-token>`
-- SQLite DB on Render disk: `/data/kondo_folk_sync.db`
+- SQLite DB for the first deploy: `/tmp/kondo_folk_sync.db`
+
+The first-deploy config intentionally does not attach a persistent disk, because
+it is easier to create and validate. `/tmp` is ephemeral, so queue/history state
+can be lost on restarts or redeploys. After the workflow is validated, upgrade
+the Render service to a paid instance, add a disk mounted at `/data`, and change
+`KONDO_FOLK_DB` to `/data/kondo_folk_sync.db`.
 
 Recommended Render settings:
 
@@ -175,7 +181,7 @@ Recommended Render settings:
 HOST=0.0.0.0
 PORT=8787
 KONDO_FOLK_RELOAD=false
-KONDO_FOLK_DB=/data/kondo_folk_sync.db
+KONDO_FOLK_DB=/tmp/kondo_folk_sync.db
 KONDO_FOLK_DRY_RUN=false
 KONDO_FOLK_AI_PROVIDER=auto
 KONDO_FOLK_PROMPT_PATH=kondo_folk_sync/prompts/crm_analysis.md

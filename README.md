@@ -25,7 +25,11 @@ http://127.0.0.1:8787/console?token=<KONDO_FOLK_ADMIN_TOKEN>
 
 ## Render Deploy
 
-This repo includes `render.yaml` and `Dockerfile`.
+This repo includes `render.yaml` and `Dockerfile`. The checked-in Blueprint is
+configured for a low-friction first deploy on Render's free web service. It uses
+ephemeral SQLite storage at `/tmp/kondo_folk_sync.db`, so queue/history state can
+be lost on restarts or redeploys. After the workflow is validated, upgrade the
+service and add a persistent disk.
 
 Deploy from Render as a Blueprint, then set these secret environment variables:
 
