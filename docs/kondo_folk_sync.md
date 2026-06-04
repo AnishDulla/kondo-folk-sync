@@ -221,6 +221,49 @@ folk's retry timing and processed later. If the process is interrupted while a
 job is `processing`, the worker picks it back up after
 `KONDO_FOLK_PROCESSING_TIMEOUT_SECONDS`.
 
+## Hard Reset
+
+If folk is not operational yet and you want a clean rebuild, use this sequence:
+
+1. Export and inspect the current folk people backup:
+
+```bash
+python scripts/reset_folk_people.py
+```
+
+2. Delete every folk person only after the dry run looks right:
+
+```bash
+python scripts/reset_folk_people.py --execute --confirm DELETE_ALL_FOLK_PEOPLE
+```
+
+The script writes a timestamped backup to `exports/` before deleting. It deletes
+folk people through the folk API one by one with request spacing.
+
+3. Clear this service's local state:
+
+- Open `/console?token=<admin-token>`.
+- Open `Advanced queue tools`.
+- Under `Reset Local Sync State`, type `RESET`.
+- Click `Clear Local Sync State`.
+
+This removes stored Kondo events and old folk person/note mappings from the
+service. It does not delete anything in Kondo or folk.
+
+4. Backfill from Kondo:
+
+- In Kondo, bulk-select the conversations you want to rebuild from.
+- Run sync from the inbox list to send latest-message payloads.
+- Review the rows in `Daily Triage`.
+- Select and send the approved batch to folk.
+
+5. Upgrade important contacts:
+
+- Open the individual Kondo conversation.
+- Run Kondo's full-history sync.
+- Confirm the console row shows `Full history`.
+- Re-send that selected row to folk.
+
 ## AI Layer
 
 The editable AI prompt lives at:

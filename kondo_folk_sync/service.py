@@ -221,6 +221,20 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         result = {"status": "full_sync_requested", "idempotency_key": idempotency_key}
         return _action_response(request, token, result, "Marked one row for full-history sync.")
 
+    @app.post("/admin/reset-local-state", response_model=None)
+    async def admin_reset_local_state(
+        request: Request,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        _require_admin(app_settings, token or x_admin_token)
+        form = await request.form()
+        if str(form.get("confirm") or "") != "RESET":
+            raise HTTPException(status_code=400, detail="Type RESET to clear local sync state")
+        store.reset_all()
+        result = {"status": "reset", "message": "local sync state cleared"}
+        return _action_response(request, token, result, "Cleared local sync state.")
+
     @app.post("/admin/reconcile", response_model=None)
     async def admin_reconcile(
         request: Request,
@@ -713,6 +727,18 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
       cursor: not-allowed;
     }}
     .error {{ color: #9b2c2c; max-width: 260px; }}
+    .danger-zone {{
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid #ece6dc;
+    }}
+    .danger {{ border-color: #9b2c2c; background: #9b2c2c; }}
+    .text-input {{
+      border: 1px solid #d8d0c3;
+      border-radius: 7px;
+      padding: 8px 10px;
+      font: inherit;
+    }}
     @media (max-width: 880px) {{
       header {{ display: block; }}
       main {{ padding: 18px 14px; }}
@@ -797,6 +823,14 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
         </thead>
         <tbody>{rows}</tbody>
       </table>
+      <section class="danger-zone">
+        <h2>Reset Local Sync State</h2>
+        <div class="hint">Use only after a folk hard reset. This clears received Kondo events and stored folk ID mappings in this service.</div>
+        <form class="primary-actions" method="post" action="/admin/reset-local-state{token_query}">
+          <input class="text-input" name="confirm" placeholder="Type RESET">
+          <button class="danger" type="submit">Clear Local Sync State</button>
+        </form>
+      </section>
     </details>
   </main>
 </body>

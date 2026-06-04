@@ -87,6 +87,11 @@ class SyncStore:
                 (idempotency_key,),
             )
 
+    def reset_all(self) -> None:
+        with self._connect() as conn:
+            conn.execute("delete from processed_events")
+            conn.execute("delete from people_map")
+
     def queue_event(
         self,
         idempotency_key: str,

@@ -451,6 +451,43 @@ def test_request_full_sync_marks_review_item(tmp_path: Path) -> None:
     assert SyncStore(settings.database_path).get_event(idempotency_key)["status"] == "full_sync_requested"
 
 
+def test_reset_local_state_requires_confirmation(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "sync.db",
+        dry_run=True,
+        ai_provider="heuristic",
+        admin_token="admin-secret",
+        review_mode=True,
+    )
+    store = SyncStore(settings.database_path)
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/prospect",
+            "fullName": "Prospect",
+            "latestMessage": "Can you send me the details?",
+        }
+    )
+    store.queue_event(event.idempotency_key, event.linkedin_url, event.to_dict())
+    store.set_person_id(event.linkedin_url or "", "per_123")
+    client = TestClient(create_app(settings))
+
+    rejected = client.post(
+        "/admin/reset-local-state",
+        data={"confirm": "wrong"},
+        headers={"x-admin-token": "admin-secret"},
+    )
+    accepted = client.post(
+        "/admin/reset-local-state",
+        data={"confirm": "RESET"},
+        headers={"x-admin-token": "admin-secret"},
+    )
+
+    assert rejected.status_code == 400
+    assert accepted.status_code == 200
+    assert SyncStore(settings.database_path).get_event(event.idempotency_key) is None
+    assert SyncStore(settings.database_path).get_person_id(event.linkedin_url or "") is None
+
+
 def test_admin_stats_requires_token_in_live_mode(tmp_path: Path) -> None:
     settings = Settings(
         database_path=tmp_path / "sync.db",

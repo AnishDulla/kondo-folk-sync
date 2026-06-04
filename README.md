@@ -53,3 +53,19 @@ https://<render-service>.onrender.com/webhooks/kondo
 ```
 
 More detail lives in `docs/kondo_folk_sync.md`.
+
+## Hard Reset
+
+To wipe folk and rebuild from Kondo latest-message syncs:
+
+```bash
+python scripts/reset_folk_people.py
+python scripts/reset_folk_people.py --execute --confirm DELETE_ALL_FOLK_PEOPLE
+```
+
+The first command exports a backup and does not delete anything. The second
+command exports a fresh backup, then deletes every folk person.
+
+After deleting folk, open the console Advanced tools and type `RESET` under
+`Reset Local Sync State`. Then bulk-sync the desired Kondo conversations into
+the webhook and review them before sending to folk.
