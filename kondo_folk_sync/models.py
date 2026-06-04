@@ -108,6 +108,7 @@ class NormalizedKondoEvent:
     linkedin_url: str | None
     full_name: str | None
     headline: str | None
+    company: str | None
     location: str | None
     kondo_labels: list[str]
     kondo_notes: str | None
@@ -207,6 +208,16 @@ def normalize_kondo_payload(payload: dict[str, Any]) -> NormalizedKondoEvent:
         labels = [part.strip() for part in labels.split(",") if part.strip()]
     if not isinstance(labels, list):
         labels = []
+    normalized_labels: list[str] = []
+    for label in labels:
+        if isinstance(label, dict):
+            label_name = _stringify(
+                _first_value(label, ("kondo_label_name", "label_name", "name", "title", "value"))
+            )
+            if label_name:
+                normalized_labels.append(label_name)
+        elif str(label).strip():
+            normalized_labels.append(str(label).strip())
     timestamp = _stringify(
         _first_value(
             source,
@@ -242,11 +253,15 @@ def normalize_kondo_payload(payload: dict[str, Any]) -> NormalizedKondoEvent:
             )
             or _nested_value(source, (("person", "headline"), ("contact", "headline")))
         ),
+        company=_stringify(
+            _first_value(source, ("linkedin_company", "company", "contact_company"))
+            or _nested_value(source, (("person", "company"), ("contact", "company"), ("company", "name")))
+        ),
         location=_stringify(
             _first_value(source, ("linkedin_location", "location", "contact_location"))
             or _nested_value(source, (("person", "location"), ("contact", "location")))
         ),
-        kondo_labels=[str(label) for label in labels],
+        kondo_labels=normalized_labels,
         kondo_notes=_stringify(_first_value(source, ("kondo_notes", "kondoNotes", "notes", "kondo_note"))),
         kondo_url=_stringify(_first_value(source, ("kondo_url", "kondoUrl", "chatUrl"))),
         latest_conversation_timestamp=timestamp,

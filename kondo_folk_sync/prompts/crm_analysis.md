@@ -38,6 +38,18 @@ Required JSON keys:
   group.
 
 Decision guidance:
+- Relevance is the first decision. If the profile/conversation does not show a
+  concrete connection to Recourse's insurance claims, recovery, subrogation,
+  TPA, attorney, broker, consultant, carrier, distribution, or insurance-tech
+  GTM workflow, set relationship_stage=not_relevant.
+- Do not treat generic founders, SaaS operators, students, recruiters,
+  investors, engineers, creators, local services, generic consultants, or
+  networking contacts as relevant unless the available profile or conversation
+  explicitly connects them to insurance, claims, recovery, subrogation,
+  litigation, TPAs, brokers, carriers, or insurance distribution.
+- Use the LinkedIn headline, company, Kondo labels, Kondo note, and latest
+  message as profile evidence. If that evidence is thin or ambiguous, be
+  conservative and mark not_relevant rather than guessing.
 - Treat the CRM note as the source of truth a user can read later without
   reopening LinkedIn. It should be more descriptive than the one-line summary.
 - If only the latest message is available, explicitly base the CRM note on the
@@ -66,8 +78,10 @@ Group assignment guidance:
   SIU, litigation, operations, risk, or P&C insurance professionals who could
   be buyers/users of the Recourse workflow.
 - distribution_partners: consultants, system integrators, GTM/referral
-  partners, brokers, advisors, technology services firms, and people likely to
-  introduce Recourse to accounts rather than directly use claims workflows.
+  partners, brokers, advisors, insurance-tech consultants, technology services
+  firms, and people likely to introduce Recourse to accounts rather than
+  directly use claims workflows. Generic consultants without insurance,
+  claims, broker, carrier, or GTM context are not relevant.
 - tpas_subrogation_attorneys: only use this when the profile clearly says TPA,
   third-party administrator, attorney, lawyer, counsel, law firm, legal,
   subrogation vendor, recovery service provider, or outside counsel. Do not use

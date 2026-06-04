@@ -39,11 +39,12 @@ def test_normalize_real_kondo_webhook_payload_shape() -> None:
             "contact_last_name": "Silva",
             "contact_headline": "Complex Subrogation Adjuster",
             "contact_linkedin_url": "https://www.linkedin.com/in/jessica-silva-6951b1b7",
+            "contact_company": "Example Carrier",
             "conversation_latest_content": "Hi Jessica, wanted to share what we're building.",
             "conversation_latest_timestamp": "2026-05-08T20:58:15.902Z",
             "kondo_url": "https://app.trykondo.com/inboxes/all/example",
             "kondo_note": "",
-            "kondo_labels": [],
+            "kondo_labels": [{"kondo_label_id": "other", "kondo_label_name": "Other"}],
         },
         "event": {"type": "manual-update"},
     }
@@ -53,6 +54,8 @@ def test_normalize_real_kondo_webhook_payload_shape() -> None:
     assert event.linkedin_url == "https://www.linkedin.com/in/jessica-silva-6951b1b7"
     assert event.full_name == "Jessica Silva"
     assert event.headline == "Complex Subrogation Adjuster"
+    assert event.company == "Example Carrier"
+    assert event.kondo_labels == ["Other"]
     assert event.latest_message == "Hi Jessica, wanted to share what we're building."
 
 
@@ -69,6 +72,7 @@ def test_heuristic_ai_creates_followup() -> None:
         {
             "linkedinUrl": "https://linkedin.com/in/prospect",
             "fullName": "Prospect",
+            "headline": "Claims Director at Example Mutual",
             "latestMessage": "Can you send me the details?",
         }
     )
@@ -97,6 +101,42 @@ def test_heuristic_ai_excludes_recruiters() -> None:
     assert analysis.follow_up_date is None
 
 
+def test_heuristic_ai_excludes_generic_consultants_without_insurance_context() -> None:
+    settings = Settings(ai_provider="heuristic")
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/generic-consultant",
+            "fullName": "Generic Consultant",
+            "headline": "Independent Consultant",
+            "company": "General Advisory LLC",
+            "latestMessage": "Happy to connect and compare notes.",
+        }
+    )
+
+    analysis = asyncio.run(AIAnalyzer(settings).analyze(event))
+
+    assert analysis.relationship_stage == "not_relevant"
+    assert analysis.follow_up_date is None
+
+
+def test_heuristic_ai_keeps_insurance_claims_consultants() -> None:
+    settings = Settings(ai_provider="heuristic")
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/claims-consultant",
+            "fullName": "Claims Consultant",
+            "headline": "CPCU, Consultant and Semi-Retired Insurance Claims Executive",
+            "company": "Claims Advisory LLC",
+            "latestMessage": "AI in subrogation sounds interesting.",
+        }
+    )
+
+    analysis = asyncio.run(AIAnalyzer(settings).analyze(event))
+
+    assert analysis.relationship_stage != "not_relevant"
+    assert analysis.group_category in {"claims_professionals", "distribution_partners"}
+
+
 def test_ai_analyzer_loads_prompt_from_file(tmp_path: Path) -> None:
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Custom CRM prompt", encoding="utf-8")
@@ -122,6 +162,7 @@ def test_dry_run_plans_folk_writes(tmp_path: Path) -> None:
         {
             "linkedinUrl": "https://linkedin.com/in/prospect",
             "fullName": "Prospect",
+            "headline": "Claims Director at Example Mutual",
             "latestMessage": "Can you send me the details?",
         }
     )
@@ -228,6 +269,7 @@ def test_kondo_webhook_accepts_x_api_key(tmp_path: Path) -> None:
     payload = {
         "linkedinUrl": "https://linkedin.com/in/prospect",
         "fullName": "Prospect",
+        "headline": "Claims Director at Example Mutual",
         "latestMessage": "Can you send me the details?",
     }
 
@@ -282,6 +324,7 @@ def test_review_mode_stages_then_sends_batch_to_folk(tmp_path: Path) -> None:
     payload = {
         "linkedinUrl": "https://linkedin.com/in/prospect",
         "fullName": "Prospect",
+        "headline": "Claims Director at Example Mutual",
         "latestMessage": "Can you send me the details?",
     }
 
@@ -407,6 +450,7 @@ def test_console_actions_redirect_back_to_console(tmp_path: Path) -> None:
     payload = {
         "linkedinUrl": "https://linkedin.com/in/prospect",
         "fullName": "Prospect",
+        "headline": "Claims Director at Example Mutual",
         "latestMessage": "Can you send me the details?",
     }
     queued = client.post("/sync/manual", json=payload)
@@ -435,6 +479,7 @@ def test_request_full_sync_marks_review_item(tmp_path: Path) -> None:
     payload = {
         "linkedinUrl": "https://linkedin.com/in/prospect",
         "fullName": "Prospect",
+        "headline": "Claims Director at Example Mutual",
         "latestMessage": "Can you send me the details?",
     }
 
@@ -464,6 +509,7 @@ def test_reset_local_state_requires_confirmation(tmp_path: Path) -> None:
         {
             "linkedinUrl": "https://linkedin.com/in/prospect",
             "fullName": "Prospect",
+            "headline": "Claims Director at Example Mutual",
             "latestMessage": "Can you send me the details?",
         }
     )
@@ -898,10 +944,11 @@ def test_admin_reprocess_replays_stored_payload(tmp_path: Path) -> None:
     )
     client = TestClient(create_app(settings))
     payload = {
-        "linkedinUrl": "https://linkedin.com/in/prospect",
-        "fullName": "Prospect",
-        "latestMessage": "Can you send me the details?",
-    }
+                "linkedinUrl": "https://linkedin.com/in/prospect",
+                "fullName": "Prospect",
+                "headline": "Claims Director at Example Mutual",
+                "latestMessage": "Can you send me the details?",
+            }
 
     first = client.post("/sync/manual", json=payload)
     idempotency_key = first.json()["idempotency_key"]
@@ -927,6 +974,7 @@ def test_admin_reconcile_retries_error_events(tmp_path: Path) -> None:
     payload = {
         "linkedinUrl": "https://linkedin.com/in/prospect",
         "fullName": "Prospect",
+        "headline": "Claims Director at Example Mutual",
         "latestMessage": "Can you send me the details?",
     }
     event = normalize_kondo_payload(payload)
@@ -962,6 +1010,7 @@ def test_rate_limit_defers_event(tmp_path: Path) -> None:
         {
             "linkedinUrl": "https://linkedin.com/in/prospect",
             "fullName": "Prospect",
+            "headline": "Claims Director at Example Mutual",
             "latestMessage": "Can you send me the details?",
         }
     )

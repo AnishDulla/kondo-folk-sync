@@ -39,6 +39,7 @@ def _event_prompt(event: NormalizedKondoEvent) -> str:
             "linkedin_url": event.linkedin_url,
             "full_name": event.full_name,
             "headline": event.headline,
+            "company": event.company,
             "location": event.location,
             "kondo_labels": event.kondo_labels,
             "kondo_notes": event.kondo_notes,
@@ -128,7 +129,7 @@ class AIAnalyzer:
             word in text
             for word in ("meeting", "call", "zoom", "calendar", "calendly", "demo", "chat")
         )
-        if _looks_non_prospect(event):
+        if _looks_non_prospect(event) or not _looks_relevant_to_recourse(event):
             return AIAnalysis(
                 summary=event.latest_message or event.conversation_text or "Non-prospecting conversation.",
                 crm_note=event.latest_message or event.conversation_text or "Non-prospecting conversation.",
@@ -200,7 +201,7 @@ def _looks_like_user_message(message: str | None) -> bool:
 def _heuristic_group_category(event: NormalizedKondoEvent) -> str:
     text = " ".join(
         part.lower()
-        for part in (event.full_name, event.headline, event.latest_message, event.conversation_text)
+        for part in (event.full_name, event.headline, event.company, event.latest_message, event.conversation_text)
         if part
     )
     if any(term in text for term in ("attorney", "law", "counsel", "subrogation counsel", "tpa")):
@@ -213,7 +214,7 @@ def _heuristic_group_category(event: NormalizedKondoEvent) -> str:
 def _looks_non_prospect(event: NormalizedKondoEvent) -> bool:
     text = " ".join(
         part.lower()
-        for part in (event.full_name, event.headline, event.latest_message, event.conversation_text)
+        for part in (event.full_name, event.headline, event.company, event.latest_message, event.conversation_text)
         if part
     )
     prospect_terms = (
@@ -253,4 +254,71 @@ def _looks_non_prospect(event: NormalizedKondoEvent) -> bool:
     )
     return any(term in text for term in non_prospect_terms) and not any(
         term in text for term in prospect_terms
+    )
+
+
+def _looks_relevant_to_recourse(event: NormalizedKondoEvent) -> bool:
+    text = " ".join(
+        part.lower()
+        for part in (
+            event.full_name,
+            event.headline,
+            event.company,
+            event.latest_message,
+            event.conversation_text,
+            " ".join(event.kondo_labels),
+            event.kondo_notes,
+        )
+        if part
+    )
+    strong_terms = (
+        "claim",
+        "claims",
+        "carrier",
+        "insurer",
+        "insurance",
+        "p&c",
+        "property and casualty",
+        "subrogation",
+        "recovery",
+        "siu",
+        "tpa",
+        "third-party administrator",
+        "attorney",
+        "lawyer",
+        "counsel",
+        "litigation",
+        "broker",
+        "underwriting",
+        "adjuster",
+        "cpcu",
+        "aic",
+        "claims executive",
+        "insurance tech",
+        "insurtech",
+        "recourse",
+    )
+    partner_terms = (
+        "distribution partner",
+        "referral partner",
+        "go to market",
+        "gtm",
+        "advisor",
+        "consultant",
+        "consulting",
+    )
+    if any(term in text for term in strong_terms):
+        return True
+    return any(term in text for term in partner_terms) and any(
+        term in text
+        for term in (
+            "insurance",
+            "carrier",
+            "claims",
+            "broker",
+            "subrogation",
+            "recovery",
+            "p&c",
+            "insurtech",
+        )
     )
