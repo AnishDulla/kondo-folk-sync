@@ -921,7 +921,7 @@ def test_console_shows_daily_triage_contacts(tmp_path: Path) -> None:
     assert "Prospect" in response.text
     assert "Selected Batch" in response.text
     assert "No contacts are in the selected batch yet." in response.text
-    assert "Send Status" in response.text
+    assert "AI Readout" in response.text
     assert "Not selected" in response.text
     assert "Latest message" in response.text
     assert "Select Checked" in response.text

@@ -552,7 +552,7 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
     batch_html = _batch_html(summary)
     triage_rows = "\n".join(_triage_row(item, token_query) for item in triage)
     if not triage_rows:
-        triage_rows = "<tr><td colspan='10' class='muted'>No analyzed contacts yet.</td></tr>"
+        triage_rows = "<div class='empty-state'>No analyzed contacts yet.</div>"
     rows = "\n".join(_event_row(event, token_query) for event in events)
     notice_html = (
         f"<section class='notice'>{html.escape(notice)}</section>"
@@ -702,6 +702,68 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
     }}
     summary {{ cursor: pointer; font-weight: 650; color: #39433e; }}
     details .actions {{ margin: 12px 0 0; }}
+    .triage-list {{
+      display: grid;
+      gap: 12px;
+    }}
+    .contact-card {{
+      background: #fff;
+      border: 1px solid #ded8ce;
+      border-radius: 8px;
+      overflow: hidden;
+    }}
+    .contact-card.selected {{ border-color: #9dbd9f; box-shadow: inset 4px 0 0 #2f6f4e; }}
+    .contact-card.full-ready {{ box-shadow: inset 4px 0 0 #2f6f4e; }}
+    .contact-card.waiting {{ box-shadow: inset 4px 0 0 #bf7b2e; }}
+    .contact-card.skipped {{ opacity: .72; }}
+    .card-top {{
+      display: grid;
+      grid-template-columns: 34px minmax(220px, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      padding: 14px 16px;
+      border-bottom: 1px solid #ece6dc;
+      background: #fbfaf7;
+    }}
+    .contact-name {{ font-weight: 750; margin-bottom: 4px; }}
+    .contact-meta {{ display: flex; flex-wrap: wrap; gap: 6px; }}
+    .status-stack {{ display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 430px; }}
+    .status-pill {{
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 12px;
+      font-weight: 650;
+      background: #edf4ee;
+      color: #17372f;
+      border: 1px solid #c7dcc9;
+      white-space: nowrap;
+    }}
+    .status-pill.warn {{ background: #fbefdf; border-color: #e2bd88; color: #6f4112; }}
+    .status-pill.neutral {{ background: #f4f1ec; border-color: #ded8ce; color: #4d5752; }}
+    .status-pill.done {{ background: #e1efe5; border-color: #a9cfb3; color: #17452f; }}
+    .card-body {{
+      display: grid;
+      grid-template-columns: minmax(240px, 1.1fr) minmax(220px, 1fr) minmax(180px, .7fr);
+      gap: 18px;
+      padding: 14px 16px 16px;
+    }}
+    .card-section-title {{
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: #68736d;
+      font-weight: 750;
+      margin-bottom: 6px;
+    }}
+    .next-action {{ font-size: 13px; line-height: 1.35; }}
+    .action-rail {{ display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; justify-content: flex-end; }}
+    .empty-state {{
+      background: #fff;
+      border: 1px solid #ded8ce;
+      border-radius: 8px;
+      padding: 20px;
+      color: #64706a;
+    }}
     .row-actions {{ display: flex; flex-wrap: wrap; gap: 7px; min-width: 180px; }}
     .select-cell {{ width: 34px; text-align: center; }}
     input[type="checkbox"] {{ width: 16px; height: 16px; }}
@@ -744,6 +806,8 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
       main {{ padding: 18px 14px; }}
       .workflow {{ grid-template-columns: 1fr; }}
       .batch-preview {{ display: block; }}
+      .card-top, .card-body {{ grid-template-columns: 1fr; }}
+      .status-stack, .action-rail {{ justify-content: flex-start; }}
       table {{ display: block; overflow-x: auto; }}
     }}
   </style>
@@ -782,23 +846,7 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
         </form>
         <div class="hint" id="checked-count">0 checked on this page.</div>
       </section>
-      <table>
-        <thead>
-          <tr>
-            <th class="select-cell">Select</th>
-            <th>Score</th>
-            <th>Contact</th>
-            <th>Send Status</th>
-            <th>Last Message</th>
-            <th>Bucket</th>
-            <th>Conversation</th>
-            <th>Next Action</th>
-            <th>Why</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody>{triage_rows}</tbody>
-      </table>
+      <div class="triage-list">{triage_rows}</div>
     </section>
     <details>
       <summary>Advanced queue tools</summary>
@@ -944,6 +992,8 @@ def _triage_row(item: dict[str, Any], token_query: str) -> str:
     has_full_history = sync_depth == "full_history"
     depth_label = "Full history" if has_full_history else "Latest message"
     history_state = _history_state_label(status, has_full_history, bool(item.get("needs_full_history")))
+    card_class = _card_class(status, has_full_history)
+    history_class = _history_pill_class(status, has_full_history, bool(item.get("needs_full_history")))
     stage_label = "Select Full History" if sync_depth == "full_history" else "Select Latest Recap"
     can_stage = status not in {"excluded", "queued_for_folk"}
     checkbox = (
@@ -998,27 +1048,40 @@ def _triage_row(item: dict[str, Any], token_query: str) -> str:
     next_action = html.escape(str(item.get("next_action") or "Review conversation."))
     if follow_up:
         next_action = f"{next_action}<div class='small'>Follow up: {html.escape(str(follow_up))}</div>"
-    return f"""<tr>
-  <td class='select-cell'>{checkbox}</td>
-  <td><span class="priority-score">{html.escape(str(item.get("score") or 0))}</span></td>
-  <td>
-    {html.escape(str(item.get("full_name") or "Unknown contact"))}
-    <div class='small'>{html.escape(history_state)}</div>
-  </td>
-  <td>
-    {html.escape(decision_label)}
-    <div class='small'><span class='tag'>{html.escape(depth_label)}</span> <span class='tag'>{html.escape(history_state)}</span></div>
-  </td>
-  <td>{html.escape(str(item.get("conversation_time") or ""))}</td>
-  <td>{html.escape(str(item.get("group_category") or ""))}</td>
-  <td>
-    {html.escape(str(item.get("relationship_stage") or ""))}
-    <div class='small'>{html.escape(str(item.get("reply_owner") or ""))} · confidence {html.escape(str(item.get("confidence") or 0))}</div>
-  </td>
-  <td>{next_action}</td>
-  <td><div class='tags'>{reasons}</div></td>
-  <td><div class='row-actions'>{" ".join(actions)}</div></td>
-</tr>"""
+    return f"""<article class="contact-card {card_class}">
+  <div class="card-top">
+    <div class="select-cell">{checkbox}</div>
+    <div>
+      <div class="contact-name">{html.escape(str(item.get("full_name") or "Unknown contact"))}</div>
+      <div class="contact-meta">
+        <span class="tag">score {html.escape(str(item.get("score") or 0))}</span>
+        <span class="tag">{html.escape(str(item.get("group_category") or "uncategorized"))}</span>
+        <span class="tag">{html.escape(str(item.get("conversation_time") or ""))}</span>
+      </div>
+    </div>
+    <div class="status-stack">
+      <span class="status-pill">{html.escape(decision_label)}</span>
+      <span class="status-pill {history_class}">{html.escape(history_state)}</span>
+      <span class="status-pill neutral">{html.escape(depth_label)}</span>
+    </div>
+  </div>
+  <div class="card-body">
+    <div>
+      <div class="card-section-title">AI Readout</div>
+      <div>{html.escape(str(item.get("relationship_stage") or ""))}</div>
+      <div class="small">{html.escape(str(item.get("reply_owner") or ""))} · confidence {html.escape(str(item.get("confidence") or 0))}</div>
+      <div class="tags" style="margin-top: 8px;">{reasons}</div>
+    </div>
+    <div>
+      <div class="card-section-title">Next Action</div>
+      <div class="next-action">{next_action}</div>
+    </div>
+    <div>
+      <div class="card-section-title">Decision</div>
+      <div class="action-rail">{" ".join(actions)}</div>
+    </div>
+  </div>
+</article>"""
 
 
 def _history_state_label(status: str, has_full_history: bool, needs_full_history: bool) -> str:
@@ -1029,6 +1092,27 @@ def _history_state_label(status: str, has_full_history: bool, needs_full_history
     if needs_full_history:
         return "Latest only - full history recommended"
     return "Latest only"
+
+
+def _history_pill_class(status: str, has_full_history: bool, needs_full_history: bool) -> str:
+    if has_full_history:
+        return "done"
+    if status == "full_sync_requested" or needs_full_history:
+        return "warn"
+    return "neutral"
+
+
+def _card_class(status: str, has_full_history: bool) -> str:
+    classes: list[str] = []
+    if status == "staged_for_folk":
+        classes.append("selected")
+    if has_full_history:
+        classes.append("full-ready")
+    if status == "full_sync_requested":
+        classes.append("waiting")
+    if status == "excluded":
+        classes.append("skipped")
+    return " ".join(classes)
 
 
 def _event_row(event: dict[str, Any], token_query: str) -> str:
