@@ -941,7 +941,9 @@ def _triage_row(item: dict[str, Any], token_query: str) -> str:
     status = str(item.get("status") or "")
     decision_label = _decision_label(status)
     sync_depth = str(item.get("sync_depth") or "latest_message")
-    depth_label = "Full history" if sync_depth == "full_history" else "Latest message"
+    has_full_history = sync_depth == "full_history"
+    depth_label = "Full history" if has_full_history else "Latest message"
+    history_state = _history_state_label(status, has_full_history, bool(item.get("needs_full_history")))
     stage_label = "Select Full History" if sync_depth == "full_history" else "Select Latest Recap"
     can_stage = status not in {"excluded", "queued_for_folk"}
     checkbox = (
@@ -966,7 +968,13 @@ def _triage_row(item: dict[str, Any], token_query: str) -> str:
             f"<button class='ghost' type='submit'>{stage_label}</button></form>"
         )
     elif status == "staged_for_folk":
-        actions.append("<span class='tag'>in selected batch</span>")
+        selected_depth = "selected: full history" if has_full_history else "selected: latest only"
+        actions.append(f"<span class='tag'>{selected_depth}</span>")
+        if not has_full_history and item.get("needs_full_history"):
+            actions.append(
+                f"<form method='post' action='/admin/request-full-sync/{key}{token_query}'>"
+                "<button class='ghost secondary' type='submit'>Get Full History First</button></form>"
+            )
         actions.append(
             f"<form method='post' action='/admin/unstage/{key}{token_query}'>"
             "<button class='ghost' type='submit'>Remove from Batch</button></form>"
@@ -986,7 +994,6 @@ def _triage_row(item: dict[str, Any], token_query: str) -> str:
     reasons = "".join(f"<span class='tag'>{html.escape(str(reason))}</span>" for reason in item.get("reasons", []))
     if not reasons:
         reasons = "<span class='muted'>review</span>"
-    full_history = "Full-history refresh recommended" if item.get("needs_full_history") else "Latest-message sync is probably enough"
     follow_up = item.get("follow_up_date")
     next_action = html.escape(str(item.get("next_action") or "Review conversation."))
     if follow_up:
@@ -996,11 +1003,11 @@ def _triage_row(item: dict[str, Any], token_query: str) -> str:
   <td><span class="priority-score">{html.escape(str(item.get("score") or 0))}</span></td>
   <td>
     {html.escape(str(item.get("full_name") or "Unknown contact"))}
-    <div class='small'>{full_history}</div>
+    <div class='small'>{html.escape(history_state)}</div>
   </td>
   <td>
     {html.escape(decision_label)}
-    <div class='small'><span class='tag'>{depth_label}</span></div>
+    <div class='small'><span class='tag'>{html.escape(depth_label)}</span> <span class='tag'>{html.escape(history_state)}</span></div>
   </td>
   <td>{html.escape(str(item.get("conversation_time") or ""))}</td>
   <td>{html.escape(str(item.get("group_category") or ""))}</td>
@@ -1012,6 +1019,16 @@ def _triage_row(item: dict[str, Any], token_query: str) -> str:
   <td><div class='tags'>{reasons}</div></td>
   <td><div class='row-actions'>{" ".join(actions)}</div></td>
 </tr>"""
+
+
+def _history_state_label(status: str, has_full_history: bool, needs_full_history: bool) -> str:
+    if has_full_history:
+        return "Full history ready"
+    if status == "full_sync_requested":
+        return "Waiting for Kondo full sync"
+    if needs_full_history:
+        return "Latest only - full history recommended"
+    return "Latest only"
 
 
 def _event_row(event: dict[str, Any], token_query: str) -> str:

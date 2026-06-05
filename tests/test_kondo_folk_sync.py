@@ -972,6 +972,91 @@ def test_console_allows_repush_for_synced_rows(tmp_path: Path) -> None:
     assert "name='selected'" in response.text
 
 
+def test_console_shows_full_history_ready_for_selected_rows(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "sync.db",
+        dry_run=True,
+        ai_provider="heuristic",
+        admin_token=None,
+    )
+    store = SyncStore(settings.database_path)
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/full-history",
+            "fullName": "Full History Prospect",
+            "headline": "Claims Director",
+            "conversation_history": "Me: Initial outreach\nProspect: Send me details.",
+            "latestMessage": "Send me details.",
+        }
+    )
+    store.start_event(event.idempotency_key, event.linkedin_url, event.to_dict())
+    store.finish_event(
+        event.idempotency_key,
+        "review_pending",
+        analysis=AIAnalysis.from_dict(
+            {
+                "summary": "Prospect asked for details.",
+                "relationship_stage": "needs_follow_up",
+                "reply_owner": "user_owes_reply",
+                "next_action": "Send details.",
+                "confidence": 0.85,
+                "group_category": "claims_professionals",
+            }
+        ).to_dict(),
+    )
+    store.stage_for_folk(event.idempotency_key)
+    client = TestClient(create_app(settings))
+
+    response = client.get("/console")
+
+    assert response.status_code == 200
+    assert "Full history ready" in response.text
+    assert "selected: full history" in response.text
+    assert "Select Full History" not in response.text
+
+
+def test_console_shows_latest_only_selected_warning(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "sync.db",
+        dry_run=True,
+        ai_provider="heuristic",
+        admin_token=None,
+    )
+    store = SyncStore(settings.database_path)
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/latest-only",
+            "fullName": "Latest Only Prospect",
+            "headline": "Claims Director",
+            "latestMessage": "Can you send me the details?",
+        }
+    )
+    store.start_event(event.idempotency_key, event.linkedin_url, event.to_dict())
+    store.finish_event(
+        event.idempotency_key,
+        "review_pending",
+        analysis=AIAnalysis.from_dict(
+            {
+                "summary": "Prospect asked for details.",
+                "relationship_stage": "needs_follow_up",
+                "reply_owner": "user_owes_reply",
+                "next_action": "Send details.",
+                "confidence": 0.85,
+                "group_category": "claims_professionals",
+            }
+        ).to_dict(),
+    )
+    store.stage_for_folk(event.idempotency_key)
+    client = TestClient(create_app(settings))
+
+    response = client.get("/console")
+
+    assert response.status_code == 200
+    assert "Latest only - full history recommended" in response.text
+    assert "selected: latest only" in response.text
+    assert "Get Full History First" in response.text
+
+
 def test_admin_reprocess_replays_stored_payload(tmp_path: Path) -> None:
     settings = Settings(
         database_path=tmp_path / "sync.db",
