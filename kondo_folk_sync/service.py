@@ -569,45 +569,59 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
     body {{
       margin: 0;
       font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: #16211d;
-      background: #f7f4ef;
+      color: #17201b;
+      background: #f5f7f8;
     }}
     header {{
-      padding: 24px 32px;
-      background: #17372f;
-      color: #fff;
+      padding: 18px 32px;
+      background: #fff;
+      color: #17201b;
       display: flex;
       justify-content: space-between;
       gap: 24px;
       align-items: center;
+      border-bottom: 1px solid #e2e7e4;
+      position: sticky;
+      top: 0;
+      z-index: 10;
     }}
-    h1 {{ font-size: 22px; margin: 0; letter-spacing: 0; }}
-    h2 {{ font-size: 17px; margin: 0 0 10px; letter-spacing: 0; }}
-    main {{ padding: 28px 32px; max-width: 1180px; margin: 0 auto; }}
-    .status {{ font-size: 14px; opacity: .9; }}
+    h1 {{ font-size: 20px; margin: 0; letter-spacing: 0; }}
+    h2 {{ font-size: 17px; margin: 0 0 8px; letter-spacing: 0; }}
+    main {{ padding: 26px 32px 40px; max-width: 1280px; margin: 0 auto; }}
+    .status {{
+      font-size: 13px;
+      color: #52605a;
+      background: #f4f7f5;
+      border: 1px solid #dfe6e2;
+      border-radius: 999px;
+      padding: 6px 10px;
+    }}
     .metrics {{ display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 24px; }}
     .metric {{
       background: #fff;
-      border: 1px solid #ded8ce;
+      border: 1px solid #e1e7e3;
       border-radius: 8px;
-      padding: 12px 16px;
-      min-width: 130px;
+      padding: 13px 16px;
+      min-width: 150px;
       display: flex;
       justify-content: space-between;
       gap: 18px;
+      box-shadow: 0 1px 2px rgba(17, 24, 39, .04);
     }}
-    .metric span {{ color: #59655f; }}
+    .metric span {{ color: #52605a; }}
+    .metric strong {{ font-size: 18px; }}
     .workflow {{
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      margin: 0 0 18px;
+      gap: 12px;
+      margin: 0 0 16px;
     }}
     .workflow-step {{
       background: #fff;
-      border: 1px solid #ded8ce;
+      border: 1px solid #e1e7e3;
       border-radius: 8px;
-      padding: 12px 14px;
+      padding: 14px 16px;
+      box-shadow: 0 1px 2px rgba(17, 24, 39, .04);
     }}
     .workflow-step strong {{
       display: block;
@@ -619,20 +633,23 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
       justify-content: space-between;
       gap: 18px;
       align-items: center;
-      background: #fff;
-      border: 1px solid #ded8ce;
+      background: #10251f;
+      color: #fff;
+      border: 1px solid #10251f;
       border-radius: 8px;
-      padding: 14px 16px;
-      margin: 0 0 18px;
+      padding: 16px 18px;
+      margin: 0 0 16px;
+      box-shadow: 0 10px 28px rgba(16, 37, 31, .14);
     }}
     .batch-preview h2 {{ margin: 0 0 4px; }}
+    .batch-preview .hint {{ color: #d9e7df; }}
     .notice {{
       margin: 0 0 18px;
-      background: #e4efe7;
-      border: 1px solid #b9d2bf;
+      background: #e8f5ed;
+      border: 1px solid #b7dcc5;
       border-radius: 8px;
       padding: 11px 14px;
-      color: #17372f;
+      color: #143b2a;
       font-size: 14px;
     }}
     .panel {{ margin: 0 0 26px; }}
@@ -643,34 +660,34 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
       gap: 18px;
       margin-bottom: 10px;
     }}
-    .hint {{ color: #64706a; font-size: 13px; }}
+    .hint {{ color: #5e6b65; font-size: 13px; }}
     table {{
       width: 100%;
       border-collapse: collapse;
       background: #fff;
-      border: 1px solid #ded8ce;
+      border: 1px solid #e1e7e3;
       border-radius: 8px;
       overflow: hidden;
     }}
     th, td {{
       padding: 11px 12px;
-      border-bottom: 1px solid #ece6dc;
+      border-bottom: 1px solid #edf1ef;
       text-align: left;
       font-size: 13px;
       vertical-align: top;
     }}
-    th {{ background: #ebe4d8; color: #39433e; font-weight: 650; }}
+    th {{ background: #f2f5f3; color: #39433e; font-weight: 650; }}
     code {{ font-size: 12px; }}
-    .small {{ color: #64706a; font-size: 12px; margin-top: 3px; }}
-    .muted {{ color: #64706a; }}
+    .small {{ color: #5e6b65; font-size: 12px; margin-top: 3px; }}
+    .muted {{ color: #5e6b65; }}
     .nowrap {{ white-space: nowrap; }}
     .tags {{ display: flex; flex-wrap: wrap; gap: 5px; max-width: 250px; }}
     .tag {{
-      border: 1px solid #d8d0c3;
-      background: #f7f4ef;
+      border: 1px solid #dde5e0;
+      background: #f7faf8;
       border-radius: 999px;
-      padding: 2px 7px;
-      color: #3c4742;
+      padding: 3px 8px;
+      color: #3d4943;
       font-size: 12px;
       white-space: nowrap;
     }}
@@ -681,8 +698,8 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
       border-radius: 999px;
       align-items: center;
       justify-content: center;
-      background: #dfeadf;
-      color: #17372f;
+      background: #e8f5ed;
+      color: #16442e;
       font-weight: 700;
     }}
     .actions {{ display: flex; gap: 10px; margin-bottom: 18px; }}
@@ -696,7 +713,7 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
     details {{
       margin: 20px 0 0;
       background: #fff;
-      border: 1px solid #ded8ce;
+      border: 1px solid #e1e7e3;
       border-radius: 8px;
       padding: 12px 14px;
     }}
@@ -708,13 +725,16 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
     }}
     .contact-card {{
       background: #fff;
-      border: 1px solid #ded8ce;
+      border: 1px solid #e1e7e3;
       border-radius: 8px;
       overflow: hidden;
+      box-shadow: 0 1px 2px rgba(17, 24, 39, .04);
+      transition: border-color .12s ease, box-shadow .12s ease;
     }}
-    .contact-card.selected {{ border-color: #9dbd9f; box-shadow: inset 4px 0 0 #2f6f4e; }}
-    .contact-card.full-ready {{ box-shadow: inset 4px 0 0 #2f6f4e; }}
-    .contact-card.waiting {{ box-shadow: inset 4px 0 0 #bf7b2e; }}
+    .contact-card:hover {{ box-shadow: 0 8px 24px rgba(17, 24, 39, .07); }}
+    .contact-card.selected {{ border-color: #87b898; box-shadow: inset 4px 0 0 #238451, 0 8px 24px rgba(17, 24, 39, .05); }}
+    .contact-card.full-ready {{ box-shadow: inset 4px 0 0 #238451, 0 8px 24px rgba(17, 24, 39, .05); }}
+    .contact-card.waiting {{ box-shadow: inset 4px 0 0 #c5791d, 0 8px 24px rgba(17, 24, 39, .05); }}
     .contact-card.skipped {{ opacity: .72; }}
     .card-top {{
       display: grid;
@@ -722,10 +742,10 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
       gap: 12px;
       align-items: start;
       padding: 14px 16px;
-      border-bottom: 1px solid #ece6dc;
-      background: #fbfaf7;
+      border-bottom: 1px solid #edf1ef;
+      background: #fbfcfb;
     }}
-    .contact-name {{ font-weight: 750; margin-bottom: 4px; }}
+    .contact-name {{ font-weight: 760; margin-bottom: 6px; font-size: 15px; }}
     .contact-meta {{ display: flex; flex-wrap: wrap; gap: 6px; }}
     .status-stack {{ display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 430px; }}
     .status-pill {{
@@ -733,14 +753,14 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
       padding: 4px 9px;
       font-size: 12px;
       font-weight: 650;
-      background: #edf4ee;
-      color: #17372f;
-      border: 1px solid #c7dcc9;
+      background: #eaf6ef;
+      color: #17452f;
+      border: 1px solid #bee1c9;
       white-space: nowrap;
     }}
-    .status-pill.warn {{ background: #fbefdf; border-color: #e2bd88; color: #6f4112; }}
-    .status-pill.neutral {{ background: #f4f1ec; border-color: #ded8ce; color: #4d5752; }}
-    .status-pill.done {{ background: #e1efe5; border-color: #a9cfb3; color: #17452f; }}
+    .status-pill.warn {{ background: #fff2df; border-color: #edc27e; color: #78450f; }}
+    .status-pill.neutral {{ background: #f5f7f6; border-color: #dfe6e2; color: #4d5752; }}
+    .status-pill.done {{ background: #e4f5ea; border-color: #a9dcb9; color: #17452f; }}
     .card-body {{
       display: grid;
       grid-template-columns: minmax(240px, 1.1fr) minmax(220px, 1fr) minmax(180px, .7fr);
@@ -759,33 +779,35 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
     .action-rail {{ display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; justify-content: flex-end; }}
     .empty-state {{
       background: #fff;
-      border: 1px solid #ded8ce;
+      border: 1px solid #e1e7e3;
       border-radius: 8px;
       padding: 20px;
-      color: #64706a;
+      color: #5e6b65;
     }}
     .row-actions {{ display: flex; flex-wrap: wrap; gap: 7px; min-width: 180px; }}
     .select-cell {{ width: 34px; text-align: center; }}
     input[type="checkbox"] {{ width: 16px; height: 16px; }}
     button, .button-link {{
-      border: 1px solid #17372f;
-      background: #17372f;
+      border: 1px solid #10251f;
+      background: #10251f;
       color: white;
       border-radius: 7px;
-      padding: 8px 11px;
+      padding: 9px 12px;
       font: inherit;
+      font-weight: 650;
       cursor: pointer;
       text-decoration: none;
       display: inline-flex;
       align-items: center;
       justify-content: center;
     }}
-    .ghost {{ background: #fff; color: #17372f; }}
-    .secondary {{ border-color: #bf7b2e; background: #bf7b2e; }}
+    button:hover, .button-link:hover {{ filter: brightness(.97); }}
+    .ghost {{ background: #fff; color: #10251f; }}
+    .secondary {{ border-color: #c5791d; background: #c5791d; }}
     button:disabled {{
-      border-color: #c8c0b5;
-      background: #d8d0c3;
-      color: #766f67;
+      border-color: #d8dfdb;
+      background: #e4e9e6;
+      color: #75817b;
       cursor: not-allowed;
     }}
     .error {{ color: #9b2c2c; max-width: 260px; }}
