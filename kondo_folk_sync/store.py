@@ -500,7 +500,7 @@ def _priority_item(
     reasons: list[str] = []
     status = str(row.get("status") or "")
     conversation_text = str(payload.get("conversation_text") or "")
-    has_full_history = "\n" in conversation_text
+    has_full_history = bool(payload.get("full_history_available")) or "\n" in conversation_text
     sync_depth = "full_history" if has_full_history else "latest_message"
     relationship_stage = str(analysis.get("relationship_stage") or "")
     reply_owner = str(analysis.get("reply_owner") or "")

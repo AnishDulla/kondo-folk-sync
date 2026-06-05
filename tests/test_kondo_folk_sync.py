@@ -722,6 +722,44 @@ def test_store_triage_marks_full_history_payloads(tmp_path: Path) -> None:
     assert triage[0]["has_full_history"] is True
 
 
+def test_kondo_string_conversation_history_marks_full_history(tmp_path: Path) -> None:
+    store = SyncStore(tmp_path / "sync.db")
+    event = normalize_kondo_payload(
+        {
+            "data": {
+                "contact_linkedin_url": "https://www.linkedin.com/in/full-history-string",
+                "contact_first_name": "Full",
+                "contact_last_name": "String",
+                "contact_headline": "Claims Director",
+                "conversation_history": "Me: Initial outreach\nProspect: Send me details.",
+                "conversation_latest_content": "Send me details.",
+                "conversation_latest_timestamp": "2026-06-02T12:00:00Z",
+            }
+        }
+    )
+    store.start_event(event.idempotency_key, event.linkedin_url, event.to_dict())
+    store.finish_event(
+        event.idempotency_key,
+        "review_pending",
+        analysis=AIAnalysis.from_dict(
+            {
+                "summary": "Prospect asked for details.",
+                "relationship_stage": "active_conversation",
+                "reply_owner": "user_owes_reply",
+                "next_action": "Send details.",
+                "confidence": 0.85,
+                "group_category": "claims_professionals",
+            }
+        ).to_dict(),
+    )
+
+    triage = store.triage_events(limit=10)
+
+    assert event.has_full_history is True
+    assert "Initial outreach" in event.conversation_text
+    assert triage[0]["sync_depth"] == "full_history"
+
+
 def test_new_message_for_existing_person_creates_new_review_item(tmp_path: Path) -> None:
     store = SyncStore(tmp_path / "sync.db")
     first = normalize_kondo_payload(
