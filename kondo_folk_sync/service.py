@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 from urllib.parse import quote
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
@@ -130,6 +131,19 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
             )
         }
 
+    @app.get("/admin/console-state")
+    async def admin_console_state(
+        limit: int = 250,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _require_admin(app_settings, token or x_admin_token)
+        return _console_state(
+            app_settings,
+            store,
+            limit=max(25, min(limit, 500)),
+        )
+
     @app.post("/admin/reprocess/{idempotency_key}", response_model=None)
     async def admin_reprocess(
         request: Request,
@@ -206,6 +220,56 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         store.unstage_for_folk(idempotency_key)
         result = {"status": "unstaged", "idempotency_key": idempotency_key}
         return _action_response(request, token, result, "Removed one row from the send batch.")
+
+    @app.post("/admin/skip/{idempotency_key}", response_model=None)
+    async def admin_skip(
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        _require_admin(app_settings, token or x_admin_token)
+        if store.get_event(idempotency_key) is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        store.skip_event(idempotency_key)
+        result = {"status": "excluded", "idempotency_key": idempotency_key}
+        return _action_response(request, token, result, "Skipped one contact.")
+
+    @app.post("/admin/mark-relevant/{idempotency_key}", response_model=None)
+    async def admin_mark_relevant(
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        _require_admin(app_settings, token or x_admin_token)
+        if store.get_event(idempotency_key) is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        form = await request.form()
+        group_category = str(form.get("group_category") or "")
+        store.mark_relevant(idempotency_key, group_category=group_category)
+        result = {"status": "review_pending", "idempotency_key": idempotency_key}
+        return _action_response(request, token, result, "Marked one contact relevant.")
+
+    @app.post("/admin/group/{idempotency_key}", response_model=None)
+    async def admin_group(
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        _require_admin(app_settings, token or x_admin_token)
+        if store.get_event(idempotency_key) is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        form = await request.form()
+        group_category = str(form.get("group_category") or "")
+        store.update_group_category(idempotency_key, group_category)
+        result = {
+            "status": "group_updated",
+            "idempotency_key": idempotency_key,
+            "group_category": group_category,
+        }
+        return _action_response(request, token, result, "Updated one bucket.")
 
     @app.post("/admin/request-full-sync/{idempotency_key}", response_model=None)
     async def admin_request_full_sync(
@@ -383,6 +447,15 @@ async def _process_payload(
                 analysis=analysis.to_dict(),
                 result=result,
             )
+            upgraded_to_selected = False
+            if event.has_full_history:
+                upgraded_to_selected = store.auto_stage_full_history_if_latest_selected(
+                    event.linkedin_url,
+                    event.idempotency_key,
+                )
+                if upgraded_to_selected:
+                    result["status"] = "staged_for_folk"
+                    result["reason"] = "full_history_auto_upgraded_selected_batch"
             return {
                 "idempotency_key": event.idempotency_key,
                 "analysis": analysis.to_dict(),
@@ -1153,6 +1226,750 @@ def _event_row(event: dict[str, Any], token_query: str) -> str:
     </form>
   </td>
 </tr>"""
+
+
+def _console_state(app_settings: Settings, store: SyncStore, limit: int = 250) -> dict[str, Any]:
+    rows = [_console_row(item) for item in store.triage_events(limit=limit)]
+    rows = _dedupe_console_rows(rows)
+    summary = {
+        "needs_review": sum(1 for row in rows if row["console_state"] in {"review", "full_ready"}),
+        "selected": sum(1 for row in rows if row["console_state"] == "selected"),
+        "selected_latest": sum(
+            1 for row in rows if row["console_state"] == "selected" and row["sync_depth"] != "full_history"
+        ),
+        "selected_full": sum(
+            1 for row in rows if row["console_state"] == "selected" and row["sync_depth"] == "full_history"
+        ),
+        "waiting": sum(1 for row in rows if row["console_state"] == "waiting"),
+        "sent": sum(1 for row in rows if row["console_state"] == "sent"),
+        "skipped": sum(1 for row in rows if row["console_state"] == "skipped"),
+        "queue_depth": store.queue_depth(app_settings.processing_timeout_seconds),
+    }
+    last_event_at = max((str(row.get("updated_at") or "") for row in rows), default="")
+    revision = "|".join(
+        [
+            last_event_at,
+            str(summary["queue_depth"]),
+            str(summary["needs_review"]),
+            str(summary["selected"]),
+            str(summary["waiting"]),
+        ]
+    )
+    return {
+        "mode": _mode_label(app_settings),
+        "ai_provider": app_settings.ai_provider,
+        "summary": summary,
+        "rows": rows,
+        "last_event_at": last_event_at,
+        "revision": revision,
+    }
+
+
+def _console_row(item: dict[str, Any]) -> dict[str, Any]:
+    status = str(item.get("status") or "")
+    sync_depth = str(item.get("sync_depth") or "latest_message")
+    has_full_history = sync_depth == "full_history"
+    if status == "staged_for_folk":
+        console_state = "selected"
+        console_label = "Selected: full conversation" if has_full_history else "Selected: latest message"
+    elif status == "full_sync_requested":
+        console_state = "waiting"
+        console_label = "Waiting for full history"
+    elif status in {"synced", "dry_run", "queued_for_folk"}:
+        console_state = "sent"
+        console_label = "Sent to folk" if status == "synced" else "Queued/sent"
+    elif status == "excluded":
+        console_state = "skipped"
+        console_label = "Skipped"
+    elif has_full_history:
+        console_state = "full_ready"
+        console_label = "Full history ready"
+    else:
+        console_state = "review"
+        console_label = "Needs review"
+    row = dict(item)
+    row.update(
+        {
+            "console_state": console_state,
+            "console_label": console_label,
+        }
+    )
+    return row
+
+
+def _dedupe_console_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        contact_key = str(row.get("linkedin_url") or row.get("idempotency_key") or "")
+        existing = grouped.get(contact_key)
+        if existing is None or _row_rank(row) > _row_rank(existing):
+            grouped[contact_key] = row
+    deduped = list(grouped.values())
+    deduped.sort(
+        key=lambda row: (
+            _state_sort_rank(str(row.get("console_state") or "")),
+            str(row.get("conversation_time") or ""),
+            str(row.get("updated_at") or ""),
+        ),
+        reverse=True,
+    )
+    return deduped
+
+
+def _row_rank(row: dict[str, Any]) -> tuple[int, int, str, str]:
+    state = str(row.get("console_state") or "")
+    depth = 2 if str(row.get("sync_depth") or "") == "full_history" else 0
+    state_priority = {
+        "selected": 10,
+        "full_ready": 8,
+        "waiting": 7,
+        "review": 6,
+        "sent": 4,
+        "skipped": 2,
+    }.get(state, 0)
+    return (
+        state_priority + depth,
+        int(row.get("score") or 0),
+        str(row.get("conversation_time") or ""),
+        str(row.get("updated_at") or ""),
+    )
+
+
+def _state_sort_rank(state: str) -> int:
+    return {
+        "full_ready": 6,
+        "review": 5,
+        "waiting": 4,
+        "selected": 3,
+        "sent": 2,
+        "skipped": 1,
+    }.get(state, 0)
+
+
+def _console_html(app_settings: Settings, store: SyncStore, token: str | None, notice: str | None = None) -> str:
+    stats_href = "/admin/stats" + (f"?token={quote(token)}" if token else "")
+    page = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kondo folk Sync Console</title>
+  <style>
+    :root {
+      --bg: #f6f7f4;
+      --surface: #fff;
+      --ink: #151a18;
+      --muted: #5f6b66;
+      --line: #dde3df;
+      --soft: #eef2ef;
+      --green: #16673f;
+      --green-soft: #e4f5ea;
+      --amber: #ad6716;
+      --amber-soft: #fff4df;
+      --red: #9b2c2c;
+      --blue: #285c8f;
+      --shadow: 0 10px 30px rgba(20, 28, 24, .08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(255, 255, 255, .94);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--line);
+    }
+    .topbar-inner {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: center;
+    }
+    .brand h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+    .brand p { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+    .health-strip { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    main { max-width: 1440px; margin: 0 auto; padding: 22px 24px 120px; }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(130px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .metric {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .metric span { display: block; color: var(--muted); font-size: 12px; font-weight: 650; }
+    .metric strong { display: block; font-size: 24px; margin-top: 4px; }
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 18px;
+      align-items: start;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .filters { display: flex; flex-wrap: wrap; gap: 8px; }
+    .search {
+      min-width: 260px;
+      flex: 1;
+      max-width: 360px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font: inherit;
+      background: var(--surface);
+    }
+    .review-list { display: grid; gap: 10px; }
+    .contact-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(20, 28, 24, .04);
+      overflow: hidden;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .contact-card.updated {
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px rgba(22, 103, 63, .12), var(--shadow);
+    }
+    .contact-card.selected { border-color: #85b99c; box-shadow: inset 4px 0 0 var(--green); }
+    .contact-card.waiting { box-shadow: inset 4px 0 0 var(--amber); }
+    .contact-card.sent, .contact-card.skipped { opacity: .72; }
+    .card-head {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      align-items: start;
+      gap: 12px;
+      padding: 16px;
+      border-bottom: 1px solid var(--soft);
+    }
+    .name-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+    .contact-name { font-size: 16px; font-weight: 760; }
+    .meta { margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.35; }
+    .pills { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .pill {
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: #37423d;
+      padding: 5px 9px;
+      font-size: 12px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+    .pill.green { background: var(--green-soft); color: var(--green); border-color: #b8dbc6; }
+    .pill.amber { background: var(--amber-soft); color: var(--amber); border-color: #e8c27b; }
+    .pill.blue { background: #e7f0fa; color: var(--blue); border-color: #bad0e7; }
+    .pill.red { background: #fae8e8; color: var(--red); border-color: #edc4c4; }
+    .card-body {
+      display: grid;
+      grid-template-columns: minmax(260px, 1.15fr) minmax(240px, 1fr) minmax(230px, .9fr);
+      gap: 16px;
+      padding: 16px;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+      margin-bottom: 6px;
+    }
+    .body-text { font-size: 13px; line-height: 1.45; }
+    .evidence { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+    .bucket-row { display: flex; gap: 8px; width: 100%; justify-content: flex-end; margin-top: 8px; }
+    select {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 8px 9px;
+      background: var(--surface);
+      font: inherit;
+      font-size: 13px;
+      max-width: 210px;
+    }
+    button, .button-link {
+      border: 1px solid #18241f;
+      background: #18241f;
+      color: #fff;
+      border-radius: 7px;
+      padding: 9px 11px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+    }
+    button:hover, .button-link:hover { filter: brightness(.97); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .ghost { background: var(--surface); color: #18241f; border-color: var(--line); }
+    .green-btn { background: var(--green); border-color: var(--green); }
+    .amber-btn { background: var(--amber); border-color: var(--amber); }
+    .danger { background: var(--red); border-color: var(--red); }
+    .drawer {
+      position: sticky;
+      top: 90px;
+      background: #14231d;
+      color: #fff;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .drawer-head { padding: 16px; border-bottom: 1px solid rgba(255,255,255,.12); }
+    .drawer h2 { margin: 0; font-size: 18px; }
+    .drawer .muted { color: #c7d2cc; }
+    .batch-list { max-height: 420px; overflow: auto; }
+    .batch-row {
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(255,255,255,.1);
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+    .batch-row strong { display: block; font-size: 13px; }
+    .drawer-actions { padding: 14px 16px; display: grid; gap: 8px; }
+    .drawer button { width: 100%; }
+    .notice {
+      margin-bottom: 14px;
+      padding: 11px 13px;
+      border: 1px solid #b8dbc6;
+      background: var(--green-soft);
+      color: var(--green);
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .empty-state {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 26px;
+      color: var(--muted);
+    }
+    .toast-stack {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 50;
+      display: grid;
+      gap: 8px;
+      width: min(360px, calc(100vw - 36px));
+    }
+    .toast {
+      background: #18241f;
+      color: #fff;
+      padding: 12px 14px;
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      font-size: 13px;
+    }
+    .advanced {
+      margin-top: 18px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    summary { cursor: pointer; font-weight: 700; }
+    .advanced-actions, .reset-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .reset-row input {
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 9px 10px;
+      font: inherit;
+    }
+    .small { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .muted { color: var(--muted); }
+    .hidden { display: none !important; }
+    @media (max-width: 1080px) {
+      .workspace { grid-template-columns: 1fr; }
+      .drawer { position: static; }
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 760px) {
+      .topbar-inner { display: block; padding: 14px; }
+      .health-strip { justify-content: flex-start; margin-top: 10px; }
+      main { padding: 16px 14px 120px; }
+      .metrics { grid-template-columns: 1fr; }
+      .toolbar { display: block; }
+      .filters { margin-top: 10px; }
+      .search { min-width: 0; width: 100%; max-width: none; }
+      .card-head, .card-body { grid-template-columns: 1fr; }
+      .pills, .actions, .bucket-row { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <h1>Kondo folk Sync Console</h1>
+        <p>Daily LinkedIn triage. Nothing goes to folk until it is in the selected batch.</p>
+      </div>
+      <div class="health-strip">
+        <span class="pill">__MODE__</span>
+        <span class="pill">ai=__AI__</span>
+      </div>
+    </div>
+  </div>
+  <main>
+    <section id="notice" class="notice hidden"></section>
+    <section class="metrics" id="metrics"></section>
+    <section class="workspace">
+      <div>
+        <section class="toolbar">
+          <div>
+            <strong>Daily Review</strong>
+            <div class="small" id="last-updated">Loading console state.</div>
+          </div>
+          <div class="filters">
+            <input id="search" class="search" placeholder="Search name, company, bucket, LinkedIn">
+            <button class="ghost" data-filter="review" type="button">Review</button>
+            <button class="ghost" data-filter="full_ready" type="button">Full ready</button>
+            <button class="ghost" data-filter="waiting" type="button">Waiting full</button>
+            <button class="ghost" data-filter="selected" type="button">Selected</button>
+            <button class="ghost" data-filter="sent" type="button">Sent</button>
+            <button class="ghost" data-filter="skipped" type="button">Skipped</button>
+          </div>
+        </section>
+        <section id="review-list" class="review-list"></section>
+        <details class="advanced">
+          <summary>Advanced queue tools</summary>
+          <section class="advanced-actions">
+            <button class="ghost" data-action="/admin/process" type="button">Process Incoming Queue</button>
+            <button class="ghost" data-action="/admin/reconcile" type="button">Retry Failed/Due Work</button>
+            <a class="button-link ghost" href="__STATS_HREF__" target="_blank" rel="noreferrer">JSON Stats</a>
+          </section>
+          <section class="reset-row">
+            <input id="reset-confirm" placeholder="Type RESET">
+            <button class="danger" id="reset-state" type="button">Clear Local Sync State</button>
+          </section>
+        </details>
+      </div>
+      <aside class="drawer">
+        <div class="drawer-head">
+          <h2>Selected Batch</h2>
+          <div class="muted" id="batch-summary">Nothing selected.</div>
+        </div>
+        <div class="batch-list" id="batch-list"></div>
+        <div class="drawer-actions">
+          <button id="send-batch" class="green-btn" type="button" disabled>Send Selected Batch to folk</button>
+          <button id="select-visible" class="ghost" type="button">Select Visible Latest</button>
+        </div>
+      </aside>
+    </section>
+  </main>
+  <div class="toast-stack" id="toasts"></div>
+  <script>
+    const TOKEN = __TOKEN_JSON__;
+    const NOTICE = __NOTICE_JSON__;
+    const stateUrl = () => `/admin/console-state${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
+    const actionUrl = (path) => `${path}${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
+    let currentState = null;
+    let activeFilter = "review";
+    let searchTerm = "";
+    let previousRows = new Map();
+
+    const metricsEl = document.getElementById("metrics");
+    const reviewListEl = document.getElementById("review-list");
+    const batchListEl = document.getElementById("batch-list");
+    const batchSummaryEl = document.getElementById("batch-summary");
+    const sendBatchBtn = document.getElementById("send-batch");
+    const lastUpdatedEl = document.getElementById("last-updated");
+    const noticeEl = document.getElementById("notice");
+    const toastsEl = document.getElementById("toasts");
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[char]));
+    }
+
+    function toast(message) {
+      const el = document.createElement("div");
+      el.className = "toast";
+      el.textContent = message;
+      toastsEl.appendChild(el);
+      setTimeout(() => el.remove(), 5200);
+    }
+
+    async function postAction(path, body = null) {
+      const response = await fetch(actionUrl(path), { method: "POST", body });
+      if (!response.ok) throw new Error(await response.text());
+      await loadState(true);
+    }
+
+    function groupOption(value, label, selected) {
+      return `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`;
+    }
+
+    function depthPill(row) {
+      if (row.sync_depth === "full_history") return `<span class="pill green">Full history</span>`;
+      if (row.needs_full_history) return `<span class="pill amber">Latest only - full recommended</span>`;
+      return `<span class="pill">Latest message</span>`;
+    }
+
+    function statusPill(row) {
+      const cls = row.console_state === "selected" ? "green" :
+        row.console_state === "waiting" ? "amber" :
+        row.console_state === "sent" ? "blue" :
+        row.console_state === "skipped" ? "red" : "";
+      return `<span class="pill ${cls}">${escapeHtml(row.console_label)}</span>`;
+    }
+
+    function rowMatches(row) {
+      if (activeFilter !== "all" && row.console_state !== activeFilter) {
+        if (!(activeFilter === "full_ready" && row.sync_depth === "full_history" && row.console_state !== "sent")) return false;
+      }
+      if (!searchTerm) return true;
+      const haystack = [
+        row.full_name,
+        row.company,
+        row.headline,
+        row.linkedin_url,
+        row.group_category,
+        row.latest_message,
+      ].join(" ").toLowerCase();
+      return haystack.includes(searchTerm);
+    }
+
+    function actionButtons(row) {
+      const key = encodeURIComponent(row.idempotency_key);
+      const actions = [];
+      if (row.console_state === "review" || row.console_state === "full_ready") {
+        actions.push(`<button class="green-btn" data-post="/admin/stage/${key}">${row.sync_depth === "full_history" ? "Select Full" : "Select Latest"}</button>`);
+        if (row.sync_depth !== "full_history") actions.push(`<button class="amber-btn" data-post="/admin/request-full-sync/${key}">Request Full</button>`);
+        actions.push(`<button class="ghost" data-post="/admin/skip/${key}">Skip</button>`);
+      } else if (row.console_state === "selected") {
+        actions.push(`<button class="ghost" data-post="/admin/unstage/${key}">Remove</button>`);
+        if (row.sync_depth !== "full_history") actions.push(`<button class="amber-btn" data-post="/admin/request-full-sync/${key}">Request Full</button>`);
+      } else if (row.console_state === "waiting") {
+        if (row.kondo_url) actions.push(`<a class="button-link amber-btn" href="${escapeHtml(row.kondo_url)}" target="_blank" rel="noreferrer">Open Kondo Full Sync</a>`);
+        actions.push(`<button class="ghost" data-post="/admin/stage/${key}">Use Latest Anyway</button>`);
+      } else if (row.console_state === "sent") {
+        actions.push(`<button class="ghost" data-post="/admin/stage/${key}">Select to Resend</button>`);
+      } else if (row.console_state === "skipped") {
+        actions.push(`<button class="ghost" data-relevant="${key}">Mark Relevant</button>`);
+      }
+      if (row.linkedin_url) actions.push(`<a class="button-link ghost" href="${escapeHtml(row.linkedin_url)}" target="_blank" rel="noreferrer">LinkedIn</a>`);
+      return actions.join("");
+    }
+
+    function cardClass(row) {
+      const classes = ["contact-card", row.console_state];
+      if (row.console_state === "selected") classes.push("selected");
+      if (row.console_state === "waiting") classes.push("waiting");
+      const previous = previousRows.get(row.idempotency_key);
+      if (previous && previous.state !== row.console_state + row.sync_depth + row.updated_at) classes.push("updated");
+      return classes.join(" ");
+    }
+
+    function renderCard(row) {
+      const labels = (row.labels || []).slice(0, 3).map((label) => `<span class="pill">${escapeHtml(label)}</span>`).join("");
+      const reasons = (row.reasons || []).slice(0, 5).map((reason) => `<span class="pill">${escapeHtml(reason)}</span>`).join("");
+      const latest = row.latest_message ? escapeHtml(row.latest_message).slice(0, 260) : "No latest message captured.";
+      const summary = row.summary ? escapeHtml(row.summary).slice(0, 260) : "No AI summary yet.";
+      const meta = [row.headline, row.company, row.conversation_time].filter(Boolean).map(escapeHtml).join(" · ");
+      return `<article class="${cardClass(row)}" data-key="${escapeHtml(row.idempotency_key)}">
+        <div class="card-head">
+          <div>
+            <div class="name-line">
+              <span class="contact-name">${escapeHtml(row.full_name || "Unknown contact")}</span>
+              <span class="pill">score ${escapeHtml(row.score ?? 0)}</span>
+            </div>
+            <div class="meta">${meta}</div>
+          </div>
+          <div class="pills">
+            ${statusPill(row)}
+            ${depthPill(row)}
+            <span class="pill blue">${escapeHtml(row.group_category || "uncategorized")}</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div>
+            <div class="label">AI Readout</div>
+            <div class="body-text">${summary}</div>
+            <div class="evidence">${reasons || labels || "<span class='muted'>No evidence tags.</span>"}</div>
+            <div class="small">${escapeHtml(row.relationship_stage || "")} · ${escapeHtml(row.reply_owner || "")} · confidence ${escapeHtml(row.confidence ?? 0)}</div>
+          </div>
+          <div>
+            <div class="label">What happened</div>
+            <div class="body-text">${latest}</div>
+            <div class="small">Next: ${escapeHtml(row.next_action || "Review conversation.")}</div>
+          </div>
+          <div>
+            <div class="label">Decision</div>
+            <div class="actions">${actionButtons(row)}</div>
+            <div class="bucket-row">
+              <select data-group="${escapeHtml(row.idempotency_key)}">
+                ${groupOption("claims_professionals", "Claims professional", row.group_category)}
+                ${groupOption("distribution_partners", "Distribution partner", row.group_category)}
+                ${groupOption("tpas_subrogation_attorneys", "TPA / subro attorney", row.group_category)}
+              </select>
+            </div>
+          </div>
+        </div>
+      </article>`;
+    }
+
+    function renderMetrics(summary) {
+      const cards = [
+        ["Needs review", summary.needs_review || 0],
+        ["Selected", summary.selected || 0],
+        ["Full selected", summary.selected_full || 0],
+        ["Waiting full", summary.waiting || 0],
+        ["Queue", summary.queue_depth || 0],
+      ];
+      metricsEl.innerHTML = cards.map(([label, value]) => `<div class="metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
+    }
+
+    function renderBatch(rows, summary) {
+      const selected = rows.filter((row) => row.console_state === "selected");
+      sendBatchBtn.disabled = selected.length === 0;
+      batchSummaryEl.textContent = selected.length
+        ? `${selected.length} selected: ${summary.selected_latest || 0} latest, ${summary.selected_full || 0} full`
+        : "Nothing selected.";
+      if (!selected.length) {
+        batchListEl.innerHTML = `<div class="batch-row"><span class="muted">Select contacts from the review list. folk will not be touched until you send this batch.</span></div>`;
+        return;
+      }
+      batchListEl.innerHTML = selected.map((row) => `<div class="batch-row">
+        <div>
+          <strong>${escapeHtml(row.full_name || "Unknown contact")}</strong>
+          <span class="muted">${row.sync_depth === "full_history" ? "Full conversation" : "Latest message"}</span>
+        </div>
+        <button class="ghost" data-post="/admin/unstage/${encodeURIComponent(row.idempotency_key)}">Remove</button>
+      </div>`).join("");
+    }
+
+    function renderState(state) {
+      currentState = state;
+      renderMetrics(state.summary || {});
+      renderBatch(state.rows || [], state.summary || {});
+      lastUpdatedEl.textContent = state.last_event_at ? `Last Kondo update: ${state.last_event_at}` : "Waiting for Kondo activity.";
+      const rows = (state.rows || []).filter(rowMatches);
+      reviewListEl.innerHTML = rows.length ? rows.map(renderCard).join("") : `<section class="empty-state">No contacts match this view.</section>`;
+      const nextPrevious = new Map();
+      for (const row of state.rows || []) nextPrevious.set(row.idempotency_key, { state: row.console_state + row.sync_depth + row.updated_at });
+      previousRows = nextPrevious;
+    }
+
+    async function loadState(showToast = false) {
+      const response = await fetch(stateUrl());
+      if (!response.ok) throw new Error(await response.text());
+      const nextState = await response.json();
+      if (currentState && currentState.revision !== nextState.revision) {
+        const oldRows = new Map((currentState.rows || []).map((row) => [row.idempotency_key, row]));
+        for (const row of nextState.rows || []) {
+          const old = oldRows.get(row.idempotency_key);
+          if (old && old.sync_depth !== "full_history" && row.sync_depth === "full_history") toast(`Full history ready for ${row.full_name || "contact"}`);
+          else if (!old && row.console_state !== "skipped") toast(`Kondo sync received for ${row.full_name || "contact"}`);
+        }
+      } else if (showToast) {
+        toast("Console updated.");
+      }
+      renderState(nextState);
+    }
+
+    document.addEventListener("click", async (event) => {
+      const target = event.target.closest("button, a");
+      if (!target) return;
+      if (target.dataset.filter) {
+        activeFilter = target.dataset.filter;
+        renderState(currentState);
+        return;
+      }
+      if (target.dataset.action) {
+        event.preventDefault();
+        try { await postAction(target.dataset.action); toast("Queue action started."); } catch (error) { toast(error.message); }
+        return;
+      }
+      if (target.dataset.post) {
+        event.preventDefault();
+        try { await postAction(target.dataset.post); toast("Updated selection."); } catch (error) { toast(error.message); }
+        return;
+      }
+      if (target.dataset.relevant) {
+        event.preventDefault();
+        const body = new FormData();
+        const row = currentState.rows.find((item) => item.idempotency_key === decodeURIComponent(target.dataset.relevant));
+        body.append("group_category", row?.group_category || "claims_professionals");
+        try { await postAction(`/admin/mark-relevant/${target.dataset.relevant}`, body); toast("Marked relevant."); } catch (error) { toast(error.message); }
+      }
+    });
+
+    document.getElementById("search").addEventListener("input", (event) => {
+      searchTerm = event.target.value.toLowerCase().trim();
+      renderState(currentState);
+    });
+
+    document.addEventListener("change", async (event) => {
+      const target = event.target;
+      if (!target.dataset || !target.dataset.group) return;
+      const body = new FormData();
+      body.append("group_category", target.value);
+      try { await postAction(`/admin/group/${encodeURIComponent(target.dataset.group)}`, body); toast("Bucket updated."); } catch (error) { toast(error.message); }
+    });
+
+    sendBatchBtn.addEventListener("click", async () => {
+      try { await postAction("/admin/send-staged"); toast("Selected batch queued for folk."); } catch (error) { toast(error.message); }
+    });
+
+    document.getElementById("select-visible").addEventListener("click", async () => {
+      if (!currentState) return;
+      const visible = currentState.rows.filter(rowMatches).filter((row) => row.console_state === "review" || row.console_state === "full_ready");
+      for (const row of visible) await postAction(`/admin/stage/${encodeURIComponent(row.idempotency_key)}`);
+      toast(`Selected ${visible.length} visible contact(s).`);
+    });
+
+    document.getElementById("reset-state").addEventListener("click", async () => {
+      const body = new FormData();
+      body.append("confirm", document.getElementById("reset-confirm").value);
+      try { await postAction("/admin/reset-local-state", body); toast("Local sync state cleared."); } catch (error) { toast(error.message); }
+    });
+
+    if (NOTICE) {
+      noticeEl.textContent = NOTICE;
+      noticeEl.classList.remove("hidden");
+    }
+    loadState().catch((error) => toast(error.message));
+    setInterval(() => loadState().catch((error) => toast(error.message)), 3000);
+  </script>
+</body>
+</html>"""
+    return (
+        page.replace("__TOKEN_JSON__", json.dumps(token or ""))
+        .replace("__NOTICE_JSON__", json.dumps(notice or ""))
+        .replace("__MODE__", html.escape(_mode_label(app_settings)))
+        .replace("__AI__", html.escape(app_settings.ai_provider))
+        .replace("__STATS_HREF__", html.escape(stats_href))
+    )
 
 
 app = create_app()

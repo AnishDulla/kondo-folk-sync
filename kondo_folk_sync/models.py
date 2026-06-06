@@ -200,6 +200,8 @@ def normalize_kondo_payload(payload: dict[str, Any]) -> NormalizedKondoEvent:
     history_text = _extract_history_text(payload)
     if not history_text and source is not payload:
         history_text = _extract_history_text(source)
+    if not history_text and bool(source.get("full_history_available")):
+        history_text = _stringify(source.get("conversation_text"))
     latest = _latest_message(payload, messages)
     if not latest and source is not payload:
         latest = _latest_message(source, messages)
@@ -282,6 +284,6 @@ def normalize_kondo_payload(payload: dict[str, Any]) -> NormalizedKondoEvent:
         latest_conversation_timestamp=timestamp,
         latest_message=latest,
         conversation_text=_conversation_text(messages, latest, history_text),
-        full_history_available=bool(messages) or bool(history_text),
+        full_history_available=bool(messages) or bool(history_text) or bool(source.get("full_history_available")),
         raw_payload=payload,
     )

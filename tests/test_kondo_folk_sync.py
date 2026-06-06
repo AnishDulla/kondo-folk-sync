@@ -915,21 +915,20 @@ def test_console_shows_daily_triage_contacts(tmp_path: Path) -> None:
     client = TestClient(create_app(settings))
 
     response = client.get("/console")
+    state = client.get("/admin/console-state")
 
     assert response.status_code == 200
-    assert "Daily Triage" in response.text
-    assert "Prospect" in response.text
+    assert "Daily Review" in response.text
     assert "Selected Batch" in response.text
-    assert "No contacts are in the selected batch yet." in response.text
-    assert "AI Readout" in response.text
-    assert "Not selected" in response.text
-    assert "Latest message" in response.text
-    assert "Select Checked" in response.text
-    assert "Select Latest Recap" in response.text
-    assert "Get Full History First" in response.text
     assert "Send Selected Batch to folk" in response.text
     assert "Advanced queue tools" in response.text
-    assert "Process Queue" not in response.text
+    assert state.status_code == 200
+    row = state.json()["rows"][0]
+    assert row["full_name"] == "Prospect"
+    assert row["console_state"] == "review"
+    assert row["console_label"] == "Needs review"
+    assert row["sync_depth"] == "latest_message"
+    assert state.json()["summary"]["needs_review"] == 1
 
 
 def test_console_allows_repush_for_synced_rows(tmp_path: Path) -> None:
@@ -965,11 +964,13 @@ def test_console_allows_repush_for_synced_rows(tmp_path: Path) -> None:
     client = TestClient(create_app(settings))
 
     response = client.get("/console")
+    state = client.get("/admin/console-state")
 
     assert response.status_code == 200
-    assert "Select to Resend Latest message" in response.text
-    assert "Sent to folk" in response.text
-    assert "name='selected'" in response.text
+    row = state.json()["rows"][0]
+    assert row["console_state"] == "sent"
+    assert row["console_label"] == "Sent to folk"
+    assert row["sync_depth"] == "latest_message"
 
 
 def test_console_shows_full_history_ready_for_selected_rows(tmp_path: Path) -> None:
@@ -1008,11 +1009,14 @@ def test_console_shows_full_history_ready_for_selected_rows(tmp_path: Path) -> N
     client = TestClient(create_app(settings))
 
     response = client.get("/console")
+    state = client.get("/admin/console-state")
 
     assert response.status_code == 200
-    assert "Full history ready" in response.text
-    assert "selected: full history" in response.text
-    assert "Select Full History" not in response.text
+    row = state.json()["rows"][0]
+    assert row["console_state"] == "selected"
+    assert row["console_label"] == "Selected: full conversation"
+    assert row["sync_depth"] == "full_history"
+    assert state.json()["summary"]["selected_full"] == 1
 
 
 def test_console_shows_latest_only_selected_warning(tmp_path: Path) -> None:
@@ -1050,11 +1054,133 @@ def test_console_shows_latest_only_selected_warning(tmp_path: Path) -> None:
     client = TestClient(create_app(settings))
 
     response = client.get("/console")
+    state = client.get("/admin/console-state")
 
     assert response.status_code == 200
-    assert "Latest only - full history recommended" in response.text
-    assert "selected: latest only" in response.text
-    assert "Get Full History First" in response.text
+    row = state.json()["rows"][0]
+    assert row["console_state"] == "selected"
+    assert row["console_label"] == "Selected: latest message"
+    assert row["sync_depth"] == "latest_message"
+    assert row["needs_full_history"] is True
+    assert state.json()["summary"]["selected_latest"] == 1
+
+
+def test_console_can_skip_and_mark_relevant(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "sync.db",
+        dry_run=True,
+        ai_provider="heuristic",
+        admin_token="admin-secret",
+        review_mode=True,
+    )
+    store = SyncStore(settings.database_path)
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/manual-review",
+            "fullName": "Manual Review",
+            "headline": "Claims Consultant",
+            "latestMessage": "Happy to compare notes.",
+        }
+    )
+    store.start_event(event.idempotency_key, event.linkedin_url, event.to_dict())
+    store.finish_event(
+        event.idempotency_key,
+        "review_pending",
+        analysis=AIAnalysis.from_dict(
+            {
+                "summary": "Potential claims consultant.",
+                "relationship_stage": "active_conversation",
+                "reply_owner": "neutral",
+                "next_action": "Review.",
+                "confidence": 0.7,
+                "group_category": "claims_professionals",
+            }
+        ).to_dict(),
+    )
+    client = TestClient(create_app(settings))
+
+    skipped = client.post(
+        f"/admin/skip/{event.idempotency_key}",
+        headers={"x-admin-token": "admin-secret"},
+    )
+    marked = client.post(
+        f"/admin/mark-relevant/{event.idempotency_key}",
+        data={"group_category": "distribution_partners"},
+        headers={"x-admin-token": "admin-secret"},
+    )
+    state = client.get("/admin/console-state", headers={"x-admin-token": "admin-secret"})
+
+    assert skipped.status_code == 200
+    assert marked.status_code == 200
+    row = state.json()["rows"][0]
+    assert row["console_state"] == "review"
+    assert row["group_category"] == "distribution_partners"
+    assert "manual override" in row["reasons"]
+
+
+def test_full_history_arrival_auto_upgrades_selected_latest(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "sync.db",
+        dry_run=True,
+        ai_provider="heuristic",
+        admin_token="admin-secret",
+        review_mode=True,
+    )
+    store = SyncStore(settings.database_path)
+    latest_event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/upgrade-prospect",
+            "fullName": "Upgrade Prospect",
+            "headline": "Claims Director",
+            "latestMessage": "Can you send me details?",
+            "latestMessageAt": "2026-06-02T12:00:00Z",
+        }
+    )
+    full_event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/upgrade-prospect",
+            "fullName": "Upgrade Prospect",
+            "headline": "Claims Director",
+            "conversation_history": "Me: Initial outreach\nProspect: Can you send me details?",
+            "latestMessage": "Can you send me details?",
+            "latestMessageAt": "2026-06-02T12:00:01Z",
+        }
+    )
+    store.start_event(latest_event.idempotency_key, latest_event.linkedin_url, latest_event.to_dict())
+    store.finish_event(
+        latest_event.idempotency_key,
+        "review_pending",
+        analysis=AIAnalysis.from_dict(
+            {
+                "summary": "Prospect asked for details.",
+                "relationship_stage": "needs_follow_up",
+                "reply_owner": "user_owes_reply",
+                "next_action": "Send details.",
+                "confidence": 0.85,
+                "group_category": "claims_professionals",
+            }
+        ).to_dict(),
+    )
+    store.stage_for_folk(latest_event.idempotency_key)
+    client = TestClient(create_app(settings))
+
+    result = asyncio.run(
+        _process_payload(
+            full_event.to_dict(),
+            SyncStore(settings.database_path),
+            AIAnalyzer(settings),
+            FolkClient(settings, SyncStore(settings.database_path)),
+        )
+    )
+    state = client.get("/admin/console-state", headers={"x-admin-token": "admin-secret"})
+
+    assert result["result"]["status"] == "staged_for_folk"
+    row = state.json()["rows"][0]
+    assert row["full_name"] == "Upgrade Prospect"
+    assert row["console_state"] == "selected"
+    assert row["sync_depth"] == "full_history"
+    assert state.json()["summary"]["selected_latest"] == 0
+    assert state.json()["summary"]["selected_full"] == 1
 
 
 def test_admin_reprocess_replays_stored_payload(tmp_path: Path) -> None:

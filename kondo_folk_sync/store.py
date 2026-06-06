@@ -50,6 +50,7 @@ class SyncStore:
             self._ensure_column(conn, "processed_events", "next_attempt_at", "text")
             self._ensure_column(conn, "processed_events", "locked_at", "text")
             self._ensure_column(conn, "processed_events", "stage_from_status", "text")
+            self._ensure_column(conn, "processed_events", "manual_override_json", "text")
             self._ensure_column(conn, "people_map", "folk_note_id", "text")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -306,6 +307,182 @@ class SyncStore:
                 (now, idempotency_key),
             )
 
+    def skip_event(self, idempotency_key: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                update processed_events
+                set status = 'excluded',
+                    result_json = ?,
+                    error = null,
+                    next_attempt_at = null,
+                    locked_at = null,
+                    stage_from_status = null,
+                    updated_at = ?
+                where idempotency_key = ?
+                """,
+                (
+                    json.dumps(
+                        {
+                            "status": "excluded",
+                            "reason": "manual_console_skip",
+                        },
+                        sort_keys=True,
+                    ),
+                    now,
+                    idempotency_key,
+                ),
+            )
+
+    def mark_relevant(self, idempotency_key: str, group_category: str | None = None) -> None:
+        now = datetime.now(UTC).isoformat()
+        allowed_groups = {
+            "claims_professionals",
+            "distribution_partners",
+            "tpas_subrogation_attorneys",
+        }
+        with self._connect() as conn:
+            row = conn.execute(
+                "select analysis_json from processed_events where idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if not row:
+                return
+            analysis = _loads_dict(row["analysis_json"])
+            if group_category in allowed_groups:
+                analysis["group_category"] = group_category
+                analysis["group_reason"] = "Manually selected in the review console."
+            if str(analysis.get("relationship_stage") or "") == "not_relevant":
+                analysis["relationship_stage"] = "active_conversation"
+                analysis["next_action"] = "Review this relevant contact and decide whether to send to folk."
+            override = {
+                "marked_relevant": True,
+                "group_category": analysis.get("group_category"),
+                "updated_at": now,
+            }
+            conn.execute(
+                """
+                update processed_events
+                set status = 'review_pending',
+                    analysis_json = ?,
+                    manual_override_json = ?,
+                    result_json = ?,
+                    error = null,
+                    next_attempt_at = null,
+                    locked_at = null,
+                    stage_from_status = null,
+                    updated_at = ?
+                where idempotency_key = ?
+                """,
+                (
+                    json.dumps(analysis, sort_keys=True, default=str),
+                    json.dumps(override, sort_keys=True, default=str),
+                    json.dumps(
+                        {
+                            "status": "review_pending",
+                            "reason": "manual_console_reinclude",
+                        },
+                        sort_keys=True,
+                    ),
+                    now,
+                    idempotency_key,
+                ),
+            )
+
+    def update_group_category(self, idempotency_key: str, group_category: str) -> None:
+        allowed_groups = {
+            "claims_professionals",
+            "distribution_partners",
+            "tpas_subrogation_attorneys",
+        }
+        if group_category not in allowed_groups:
+            return
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "select analysis_json, manual_override_json from processed_events where idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if not row:
+                return
+            analysis = _loads_dict(row["analysis_json"])
+            analysis["group_category"] = group_category
+            analysis["group_reason"] = "Manually selected in the review console."
+            override = _loads_dict(row["manual_override_json"])
+            override.update({"group_category": group_category, "updated_at": now})
+            conn.execute(
+                """
+                update processed_events
+                set analysis_json = ?,
+                    manual_override_json = ?,
+                    updated_at = ?
+                where idempotency_key = ?
+                """,
+                (
+                    json.dumps(analysis, sort_keys=True, default=str),
+                    json.dumps(override, sort_keys=True, default=str),
+                    now,
+                    idempotency_key,
+                ),
+            )
+
+    def auto_stage_full_history_if_latest_selected(
+        self,
+        linkedin_url: str | None,
+        full_history_key: str,
+    ) -> bool:
+        if not linkedin_url:
+            return False
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as conn:
+            full_row = conn.execute(
+                """
+                select status, stage_from_status
+                from processed_events
+                where idempotency_key = ?
+                """,
+                (full_history_key,),
+            ).fetchone()
+            if not full_row:
+                return False
+            same_row_was_selected = bool(full_row["stage_from_status"])
+            selected_latest = conn.execute(
+                """
+                select idempotency_key
+                from processed_events
+                where linkedin_url = ?
+                  and idempotency_key != ?
+                  and status = 'staged_for_folk'
+                limit 1
+                """,
+                (linkedin_url, full_history_key),
+            ).fetchone()
+            if not same_row_was_selected and not selected_latest:
+                return False
+            if selected_latest:
+                conn.execute(
+                    """
+                    update processed_events
+                    set status = coalesce(stage_from_status, 'review_pending'),
+                        stage_from_status = null,
+                        updated_at = ?
+                    where idempotency_key = ?
+                    """,
+                    (now, selected_latest["idempotency_key"]),
+                )
+            conn.execute(
+                """
+                update processed_events
+                set status = 'staged_for_folk',
+                    stage_from_status = coalesce(stage_from_status, 'review_pending'),
+                    updated_at = ?
+                where idempotency_key = ?
+                """,
+                (now, full_history_key),
+            )
+        return True
+
     def get_person_id(self, linkedin_url: str) -> str | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -383,7 +560,8 @@ class SyncStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                select idempotency_key, linkedin_url, status, payload_json, analysis_json, updated_at
+                select idempotency_key, linkedin_url, status, payload_json, analysis_json,
+                    manual_override_json, updated_at
                 from processed_events
                 where status in (
                     'review_pending', 'full_sync_requested', 'queued_for_folk',
@@ -537,6 +715,10 @@ def _priority_item(
         score = 0
         reasons = ["excluded"]
 
+    manual_override = _loads_dict(row.get("manual_override_json"))
+    if manual_override:
+        reasons.append("manual override")
+
     needs_full_history = (
         status != "excluded"
         and (
@@ -556,6 +738,13 @@ def _priority_item(
         "linkedin_url": row.get("linkedin_url") or payload.get("linkedin_url"),
         "kondo_url": payload.get("kondo_url"),
         "full_name": payload.get("full_name") or row.get("linkedin_url") or "Unknown contact",
+        "headline": payload.get("headline"),
+        "company": payload.get("company"),
+        "location": payload.get("location"),
+        "labels": payload.get("kondo_labels") or [],
+        "latest_message": payload.get("latest_message"),
+        "summary": analysis.get("summary") or "",
+        "group_reason": analysis.get("group_reason") or "",
         "group_category": group_category,
         "relationship_stage": relationship_stage,
         "reply_owner": reply_owner,
@@ -568,4 +757,5 @@ def _priority_item(
         "needs_full_history": needs_full_history,
         "conversation_time": payload.get("latest_conversation_timestamp") or row.get("updated_at"),
         "updated_at": row.get("updated_at"),
+        "manual_override": manual_override,
     }
