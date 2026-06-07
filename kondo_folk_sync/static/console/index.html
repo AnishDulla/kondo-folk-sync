@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kondo folk Sync Console</title>
+  <link rel="stylesheet" href="/static/console/console.css">
+</head>
+<body>
+  <div class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <h1>Kondo folk Sync Console</h1>
+        <p>__USER_NAME__ LinkedIn triage. Nothing goes to folk until it is in the selected batch.</p>
+      </div>
+      <div class="health-strip">
+        <span class="pill">__MODE__</span>
+        <span class="pill">ai=__AI__</span>
+      </div>
+    </div>
+  </div>
+  <main>
+    <section id="notice" class="notice hidden"></section>
+    <section class="metrics" id="metrics"></section>
+    <section class="workspace">
+      <div>
+        <section class="toolbar">
+          <div>
+            <strong>Daily Review</strong>
+            <div class="small" id="last-updated">Loading console state.</div>
+          </div>
+          <div class="filters">
+            <input id="search" class="search" placeholder="Search name, company, bucket, LinkedIn">
+            <button class="ghost" data-filter="review" type="button">Review</button>
+            <button class="ghost" data-filter="full_ready" type="button">Full ready</button>
+            <button class="ghost" data-filter="waiting" type="button">Waiting full</button>
+            <button class="ghost" data-filter="selected" type="button">Selected</button>
+            <button class="ghost" data-filter="sent" type="button">Sent</button>
+            <button class="ghost" data-filter="skipped" type="button">Skipped</button>
+          </div>
+        </section>
+        <section id="review-list" class="review-list"></section>
+        <details class="advanced">
+          <summary>Advanced queue tools</summary>
+          <section class="advanced-actions">
+            <button class="ghost" data-action="/process" type="button">Process Incoming Queue</button>
+            <button class="ghost" data-action="/reconcile" type="button">Retry Failed/Due Work</button>
+            <a class="button-link ghost" href="__STATS_HREF__" target="_blank" rel="noreferrer">JSON Stats</a>
+          </section>
+          <section class="reset-row">
+            <input id="reset-confirm" placeholder="Type RESET">
+            <button class="danger" id="reset-state" type="button">Clear Local Sync State</button>
+          </section>
+        </details>
+      </div>
+      <aside class="drawer">
+        <div class="drawer-head">
+          <h2>Selected Batch</h2>
+          <div class="muted" id="batch-summary">Nothing selected.</div>
+        </div>
+        <div class="batch-list" id="batch-list"></div>
+        <div class="drawer-actions">
+          <button id="send-batch" class="green-btn" type="button" disabled>Send Selected Batch to folk</button>
+          <button id="select-visible" class="ghost" type="button">Select Visible Latest</button>
+        </div>
+      </aside>
+    </section>
+  </main>
+  <div class="toast-stack" id="toasts"></div>
+  <script>
+    window.KONDO_CONSOLE_CONFIG = __CONSOLE_CONFIG_JSON__;
+  </script>
+  <script type="module" src="/static/console/console.js"></script>
+</body>
+</html>

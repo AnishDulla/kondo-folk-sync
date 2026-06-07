@@ -922,6 +922,9 @@ def test_console_shows_daily_triage_contacts(tmp_path: Path) -> None:
     assert "Selected Batch" in response.text
     assert "Send Selected Batch to folk" in response.text
     assert "Advanced queue tools" in response.text
+    assert "/static/console/console.css" in response.text
+    assert "/static/console/console.js" in response.text
+    assert "window.KONDO_CONSOLE_CONFIG" in response.text
     assert state.status_code == 200
     row = state.json()["rows"][0]
     assert row["full_name"] == "Prospect"
@@ -929,6 +932,30 @@ def test_console_shows_daily_triage_contacts(tmp_path: Path) -> None:
     assert row["console_label"] == "Needs review"
     assert row["sync_depth"] == "latest_message"
     assert state.json()["summary"]["needs_review"] == 1
+
+
+def test_console_static_assets_are_served(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "sync.db",
+        dry_run=True,
+        ai_provider="heuristic",
+        admin_token=None,
+    )
+    client = TestClient(create_app(settings))
+
+    css = client.get("/static/console/console.css")
+    js = client.get("/static/console/console.js")
+    api = client.get("/static/console/api.js")
+    components = client.get("/static/console/components.js")
+
+    assert css.status_code == 200
+    assert ".workspace" in css.text
+    assert js.status_code == 200
+    assert "createConsoleApi" in js.text
+    assert api.status_code == 200
+    assert "export function createConsoleApi" in api.text
+    assert components.status_code == 200
+    assert "export function renderCard" in components.text
 
 
 def test_console_allows_repush_for_synced_rows(tmp_path: Path) -> None:
