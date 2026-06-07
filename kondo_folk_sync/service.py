@@ -1023,6 +1023,7 @@ def _console_state(
         "skipped": sum(1 for row in rows if row["console_state"] == "skipped"),
         "queue_depth": store.queue_depth(app_settings.processing_timeout_seconds, user_slug=active_user.slug),
     }
+    status_counts = store.status_counts(user_slug=active_user.slug)
     last_event_at = max((str(row.get("updated_at") or "") for row in rows), default="")
     revision = "|".join(
         [
@@ -1031,6 +1032,7 @@ def _console_state(
             str(summary["needs_review"]),
             str(summary["selected"]),
             str(summary["waiting"]),
+            json.dumps(status_counts, sort_keys=True),
         ]
     )
     return {
@@ -1038,6 +1040,7 @@ def _console_state(
         "ai_provider": app_settings.ai_provider,
         "user": {"slug": active_user.slug, "name": active_user.name},
         "summary": summary,
+        "status_counts": status_counts,
         "rows": rows,
         "last_event_at": last_event_at,
         "revision": revision,

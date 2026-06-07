@@ -137,6 +137,53 @@ export function renderWorkflow(summary) {
   </div>`).join("");
 }
 
+export function renderSyncStatus(state) {
+  const summary = state.summary || {};
+  const counts = state.status_counts || {};
+  const queueDepth = summary.queue_depth || 0;
+  const ready = summary.needs_review || 0;
+  const selected = summary.selected || 0;
+  const skipped = summary.skipped || 0;
+  const sent = summary.sent || 0;
+  const queued = (counts.queued || 0) + (counts.retry_wait || 0) + (counts.error || 0);
+  const processing = counts.processing || 0;
+  const hasAnyActivity = Boolean(state.last_event_at || ready || selected || skipped || sent || queueDepth);
+  let tone = "idle";
+  let title = "No Kondo activity yet";
+  let copy = "Run a Kondo sync and contacts will appear here as they are received and analyzed.";
+
+  if (queueDepth > 0 || processing > 0 || queued > 0) {
+    tone = "working";
+    title = "Processing AI triage";
+    copy = `${queueDepth} still in queue. ${ready} ready to review so far.`;
+  } else if (ready > 0 || selected > 0) {
+    tone = "ready";
+    title = "Ready for review";
+    copy = `${ready} contacts ready. Queue clear.`;
+  } else if (hasAnyActivity) {
+    tone = "done";
+    title = "Sync processed";
+    copy = "Queue clear. Check skipped or sent contacts if the open list is empty.";
+  }
+
+  const lastUpdate = state.last_event_at ? escapeHtml(state.last_event_at) : "No events received";
+  return `<div class="sync-card ${tone}">
+    <div>
+      <div class="sync-eyebrow">Sync Status</div>
+      <h2>${title}</h2>
+      <p>${escapeHtml(copy)}</p>
+    </div>
+    <div class="sync-metrics">
+      <span><strong>${queueDepth}</strong> queue</span>
+      <span><strong>${ready}</strong> ready</span>
+      <span><strong>${selected}</strong> selected</span>
+      <span><strong>${skipped}</strong> skipped</span>
+      <span><strong>${sent}</strong> sent</span>
+    </div>
+    <div class="sync-last">Last update: ${lastUpdate}</div>
+  </div>`;
+}
+
 export function renderBatch(rows, summary) {
   const selected = rows.filter((row) => row.console_state === "selected");
   if (!selected.length) {

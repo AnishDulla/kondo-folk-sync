@@ -1,5 +1,5 @@
 import { createConsoleApi } from "./api.js";
-import { batchSummary, renderBatch, renderTriageRow, renderWorkflow } from "./components.js";
+import { batchSummary, renderBatch, renderSyncStatus, renderTriageRow, renderWorkflow } from "./components.js";
 
 const config = window.KONDO_CONSOLE_CONFIG || {};
 const api = createConsoleApi(config);
@@ -10,6 +10,7 @@ let searchTerm = "";
 let previousRows = new Map();
 
 const workflowEl = document.getElementById("workflow");
+const syncStatusEl = document.getElementById("sync-status");
 const reviewListEl = document.getElementById("review-list");
 const batchListEl = document.getElementById("batch-list");
 const batchSummaryEl = document.getElementById("batch-summary");
@@ -78,6 +79,7 @@ function renderState(state) {
   const summary = state.summary || {};
   const selected = rows.filter((row) => row.console_state === "selected");
 
+  syncStatusEl.innerHTML = renderSyncStatus(state);
   workflowEl.innerHTML = renderWorkflow(summary);
   batchListEl.innerHTML = renderBatch(rows, summary);
   batchSummaryEl.textContent = batchSummary(rows, summary);

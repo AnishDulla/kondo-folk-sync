@@ -932,6 +932,7 @@ def test_console_shows_daily_triage_contacts(tmp_path: Path) -> None:
     assert row["console_label"] == "Needs review"
     assert row["sync_depth"] == "latest_message"
     assert state.json()["summary"]["needs_review"] == 1
+    assert state.json()["status_counts"]["review_pending"] == 1
 
 
 def test_console_static_assets_are_served(tmp_path: Path) -> None:
@@ -951,12 +952,14 @@ def test_console_static_assets_are_served(tmp_path: Path) -> None:
     assert css.status_code == 200
     assert ".workspace" in css.text
     assert ".triage-row" in css.text
+    assert ".sync-card" in css.text
     assert js.status_code == 200
-    assert "createConsoleApi" in js.text
+    assert "renderSyncStatus" in js.text
     assert api.status_code == 200
     assert "export function createConsoleApi" in api.text
     assert components.status_code == 200
     assert "export function renderTriageRow" in components.text
+    assert "export function renderSyncStatus" in components.text
 
 
 def test_console_allows_repush_for_synced_rows(tmp_path: Path) -> None:

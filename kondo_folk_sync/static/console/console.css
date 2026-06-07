@@ -70,6 +70,88 @@ main {
   padding: 22px 24px 120px;
 }
 
+.sync-status {
+  margin-bottom: 14px;
+}
+
+.sync-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto minmax(180px, auto);
+  gap: 16px;
+  align-items: center;
+  box-shadow: 0 1px 2px rgba(22, 31, 27, .04);
+}
+
+.sync-card.working {
+  border-color: #e4bd74;
+  box-shadow: inset 5px 0 0 var(--amber), 0 1px 2px rgba(22, 31, 27, .04);
+}
+
+.sync-card.ready {
+  border-color: #9ccaa9;
+  box-shadow: inset 5px 0 0 var(--green), 0 1px 2px rgba(22, 31, 27, .04);
+}
+
+.sync-card.done {
+  border-color: #b8cfe5;
+  box-shadow: inset 5px 0 0 var(--blue), 0 1px 2px rgba(22, 31, 27, .04);
+}
+
+.sync-eyebrow {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  margin-bottom: 4px;
+}
+
+.sync-card h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.sync-card p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.sync-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.sync-metrics span {
+  min-width: 74px;
+  background: #f8faf8;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sync-metrics strong {
+  display: block;
+  color: var(--ink);
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.sync-last {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
 .workflow {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -402,6 +484,8 @@ summary { cursor: pointer; font-weight: 800; }
 @media (max-width: 1220px) {
   .workspace { grid-template-columns: 1fr; }
   .drawer { position: static; }
+  .sync-card { grid-template-columns: 1fr; }
+  .sync-metrics, .sync-last { justify-content: flex-start; text-align: left; }
   .triage-row { grid-template-columns: minmax(200px, .8fr) minmax(260px, 1fr); }
   .triage-row > section:nth-child(3) { border-left: 0; border-top: 1px solid var(--soft); }
   .triage-row > section:nth-child(4) { border-top: 1px solid var(--soft); }
