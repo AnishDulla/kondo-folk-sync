@@ -563,7 +563,7 @@ def test_console_available_in_local_dry_run_without_token(tmp_path: Path) -> Non
     response = client.get("/console")
 
     assert response.status_code == 200
-    assert "Kondo folk Sync Console" in response.text
+    assert "LinkedIn Daily Triage" in response.text
 
 
 def test_store_priority_events_rank_actionable_contacts(tmp_path: Path) -> None:
@@ -918,10 +918,10 @@ def test_console_shows_daily_triage_contacts(tmp_path: Path) -> None:
     state = client.get("/admin/console-state")
 
     assert response.status_code == 200
-    assert "Daily Review" in response.text
+    assert "Review contacts" in response.text
     assert "Selected Batch" in response.text
-    assert "Send Selected Batch to folk" in response.text
-    assert "Advanced queue tools" in response.text
+    assert "Send selected to folk" in response.text
+    assert "Admin tools" in response.text
     assert "/static/console/console.css" in response.text
     assert "/static/console/console.js" in response.text
     assert "window.KONDO_CONSOLE_CONFIG" in response.text
@@ -950,12 +950,13 @@ def test_console_static_assets_are_served(tmp_path: Path) -> None:
 
     assert css.status_code == 200
     assert ".workspace" in css.text
+    assert ".triage-row" in css.text
     assert js.status_code == 200
     assert "createConsoleApi" in js.text
     assert api.status_code == 200
     assert "export function createConsoleApi" in api.text
     assert components.status_code == 200
-    assert "export function renderCard" in components.text
+    assert "export function renderTriageRow" in components.text
 
 
 def test_console_allows_repush_for_synced_rows(tmp_path: Path) -> None:

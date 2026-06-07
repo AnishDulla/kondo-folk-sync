@@ -1,19 +1,20 @@
 import { createConsoleApi } from "./api.js";
-import { batchSummary, renderBatch, renderCard, renderMetrics } from "./components.js";
+import { batchSummary, renderBatch, renderTriageRow, renderWorkflow } from "./components.js";
 
 const config = window.KONDO_CONSOLE_CONFIG || {};
 const api = createConsoleApi(config);
 
 let currentState = null;
-let activeFilter = "review";
+let activeFilter = "open";
 let searchTerm = "";
 let previousRows = new Map();
 
-const metricsEl = document.getElementById("metrics");
+const workflowEl = document.getElementById("workflow");
 const reviewListEl = document.getElementById("review-list");
 const batchListEl = document.getElementById("batch-list");
 const batchSummaryEl = document.getElementById("batch-summary");
 const sendBatchBtn = document.getElementById("send-batch");
+const selectVisibleBtn = document.getElementById("select-visible");
 const lastUpdatedEl = document.getElementById("last-updated");
 const noticeEl = document.getElementById("notice");
 const toastsEl = document.getElementById("toasts");
@@ -31,10 +32,22 @@ async function postAction(path, body = null) {
   await loadState(true);
 }
 
+function sortRows(rows) {
+  return [...rows].sort((a, b) => {
+    const aTime = a.conversation_time || a.updated_at || "";
+    const bTime = b.conversation_time || b.updated_at || "";
+    return String(bTime).localeCompare(String(aTime));
+  });
+}
+
+function stateMatches(row) {
+  if (activeFilter === "open") return ["review", "full_ready", "waiting"].includes(row.console_state);
+  if (activeFilter === "full_ready") return row.sync_depth === "full_history" && row.console_state !== "sent";
+  return row.console_state === activeFilter;
+}
+
 function rowMatches(row) {
-  if (activeFilter !== "all" && row.console_state !== activeFilter) {
-    if (!(activeFilter === "full_ready" && row.sync_depth === "full_history" && row.console_state !== "sent")) return false;
-  }
+  if (!stateMatches(row)) return false;
   if (!searchTerm) return true;
   const haystack = [
     row.full_name,
@@ -43,26 +56,40 @@ function rowMatches(row) {
     row.linkedin_url,
     row.group_category,
     row.latest_message,
+    row.summary,
+    row.next_action,
   ].join(" ").toLowerCase();
   return haystack.includes(searchTerm);
 }
 
+function emptyMessage() {
+  if (activeFilter === "open" && !searchTerm) {
+    return "No open contacts. When Kondo sends new conversations, they will appear here for review.";
+  }
+  if (activeFilter === "selected") return "No selected contacts yet. Choose Latest or Full from the review list.";
+  if (activeFilter === "waiting") return "No contacts are waiting for full history.";
+  if (activeFilter === "full_ready") return "No full-history contacts are ready yet.";
+  return "No contacts match this view.";
+}
+
 function renderState(state) {
   currentState = state;
-  const rows = state.rows || [];
+  const rows = sortRows(state.rows || []);
   const summary = state.summary || {};
   const selected = rows.filter((row) => row.console_state === "selected");
 
-  metricsEl.innerHTML = renderMetrics(summary);
+  workflowEl.innerHTML = renderWorkflow(summary);
   batchListEl.innerHTML = renderBatch(rows, summary);
   batchSummaryEl.textContent = batchSummary(rows, summary);
   sendBatchBtn.disabled = selected.length === 0;
-  lastUpdatedEl.textContent = state.last_event_at ? `Last Kondo update: ${state.last_event_at}` : "Waiting for Kondo activity.";
+  sendBatchBtn.textContent = selected.length ? `Send ${selected.length} selected to folk` : "Send selected to folk";
+  selectVisibleBtn.disabled = !rows.some((row) => rowMatches(row) && ["review", "full_ready"].includes(row.console_state));
+  lastUpdatedEl.textContent = state.last_event_at ? `Most recent Kondo update: ${state.last_event_at}` : "Waiting for Kondo conversations.";
 
   const visibleRows = rows.filter(rowMatches);
   reviewListEl.innerHTML = visibleRows.length
-    ? visibleRows.map((row) => renderCard(row, previousRows)).join("")
-    : `<section class="empty-state">No contacts match this view.</section>`;
+    ? visibleRows.map((row) => renderTriageRow(row, previousRows)).join("")
+    : `<section class="empty-state">${emptyMessage()}</section>`;
 
   const nextPrevious = new Map();
   for (const row of rows) {
@@ -77,8 +104,9 @@ async function loadState(showToast = false) {
     const oldRows = new Map((currentState.rows || []).map((row) => [row.idempotency_key, row]));
     for (const row of nextState.rows || []) {
       const old = oldRows.get(row.idempotency_key);
-      if (old && old.sync_depth !== "full_history" && row.sync_depth === "full_history") toast(`Full history ready for ${row.full_name || "contact"}`);
-      else if (!old && row.console_state !== "skipped") toast(`Kondo sync received for ${row.full_name || "contact"}`);
+      if (old && old.sync_depth !== "full_history" && row.sync_depth === "full_history") toast(`Full history ready: ${row.full_name || "contact"}`);
+      else if (!old && row.console_state !== "skipped") toast(`New Kondo conversation: ${row.full_name || "contact"}`);
+      else if (old && old.console_state === "waiting" && row.console_state === "full_ready") toast(`Ready to select full history: ${row.full_name || "contact"}`);
     }
   } else if (showToast) {
     toast("Console updated.");
@@ -86,22 +114,30 @@ async function loadState(showToast = false) {
   renderState(nextState);
 }
 
+function setActiveFilter(filter) {
+  activeFilter = filter;
+  document.querySelectorAll("[data-filter]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.filter === filter);
+  });
+  renderState(currentState);
+}
+
 document.addEventListener("click", async (event) => {
   const target = event.target.closest("button, a");
   if (!target) return;
   if (target.dataset.filter) {
-    activeFilter = target.dataset.filter;
-    renderState(currentState);
+    event.preventDefault();
+    setActiveFilter(target.dataset.filter);
     return;
   }
   if (target.dataset.action) {
     event.preventDefault();
-    try { await postAction(target.dataset.action); toast("Queue action started."); } catch (error) { toast(error.message); }
+    try { await postAction(target.dataset.action); toast("Admin action started."); } catch (error) { toast(error.message); }
     return;
   }
   if (target.dataset.post) {
     event.preventDefault();
-    try { await postAction(target.dataset.post); toast("Updated selection."); } catch (error) { toast(error.message); }
+    try { await postAction(target.dataset.post); toast("Selection updated."); } catch (error) { toast(error.message); }
     return;
   }
   if (target.dataset.relevant) {
@@ -130,9 +166,9 @@ sendBatchBtn.addEventListener("click", async () => {
   try { await postAction("/send-staged"); toast("Selected batch queued for folk."); } catch (error) { toast(error.message); }
 });
 
-document.getElementById("select-visible").addEventListener("click", async () => {
+selectVisibleBtn.addEventListener("click", async () => {
   if (!currentState) return;
-  const visible = currentState.rows.filter(rowMatches).filter((row) => row.console_state === "review" || row.console_state === "full_ready");
+  const visible = sortRows(currentState.rows || []).filter(rowMatches).filter((row) => row.console_state === "review" || row.console_state === "full_ready");
   for (const row of visible) await postAction(`/stage/${encodeURIComponent(row.idempotency_key)}`);
   toast(`Selected ${visible.length} visible contact(s).`);
 });
