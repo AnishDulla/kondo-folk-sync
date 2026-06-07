@@ -82,6 +82,68 @@ def _latest_message(payload: dict[str, Any], messages: list[dict[str, Any]]) -> 
     return None
 
 
+def _message_direction(value: Any) -> str | None:
+    raw = _stringify(value)
+    if not raw:
+        return None
+    normalized = raw.lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"user", "me", "myself", "self", "you", "outbound", "sent", "from_me", "current_user"}:
+        return "user"
+    if normalized in {
+        "prospect",
+        "lead",
+        "contact",
+        "them",
+        "inbound",
+        "received",
+        "from_them",
+        "other",
+        "participant",
+    }:
+        return "prospect"
+    return None
+
+
+def _direction_from_status(value: Any) -> str | None:
+    raw = _stringify(value)
+    if not raw:
+        return None
+    normalized = raw.lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"waiting_for_their_reply", "waiting_for_prospect_reply", "prospect_owes_reply"}:
+        return "user"
+    if normalized in {"waiting_for_my_reply", "waiting_for_your_reply", "user_owes_reply", "unread", "needs_response"}:
+        return "prospect"
+    return None
+
+
+def _latest_message_direction(payload: dict[str, Any], messages: list[dict[str, Any]]) -> str:
+    direct = _message_direction(
+        _first_value(
+            payload,
+            (
+                "latest_message_direction",
+                "latestMessageDirection",
+                "latest_message_sender",
+                "latestMessageSender",
+                "conversation_latest_direction",
+                "conversation_latest_sender",
+                "conversation_latest_from",
+            ),
+        )
+    )
+    if direct:
+        return direct
+    if messages:
+        last = messages[-1]
+        direction = _message_direction(_first_value(last, ("sender", "from", "author", "direction", "role")))
+        if direction:
+            return direction
+    status_direction = _direction_from_status(
+        _first_value(payload, ("conversation_status", "conversationStatus", "status"))
+    )
+    return status_direction or "unknown"
+
+
 def _conversation_text(messages: list[dict[str, Any]], latest: str | None, history_text: str | None = None) -> str:
     if history_text:
         if latest and latest not in history_text:
@@ -126,6 +188,8 @@ class NormalizedKondoEvent:
     kondo_url: str | None
     latest_conversation_timestamp: str | None
     latest_message: str | None
+    latest_message_direction: str
+    conversation_status: str | None
     conversation_text: str
     full_history_available: bool
     raw_payload: dict[str, Any] = field(repr=False)
@@ -205,6 +269,12 @@ def normalize_kondo_payload(payload: dict[str, Any]) -> NormalizedKondoEvent:
     latest = _latest_message(payload, messages)
     if not latest and source is not payload:
         latest = _latest_message(source, messages)
+    latest_direction = _latest_message_direction(payload, messages)
+    if latest_direction == "unknown" and source is not payload:
+        latest_direction = _latest_message_direction(source, messages)
+    conversation_status = _stringify(
+        _first_value(source, ("conversation_status", "conversationStatus", "status"))
+    )
     linkedin_url = _canonical_url(
         _stringify(
             _first_value(
@@ -283,6 +353,8 @@ def normalize_kondo_payload(payload: dict[str, Any]) -> NormalizedKondoEvent:
         kondo_url=_stringify(_first_value(source, ("kondo_url", "kondoUrl", "chatUrl"))),
         latest_conversation_timestamp=timestamp,
         latest_message=latest,
+        latest_message_direction=latest_direction,
+        conversation_status=conversation_status,
         conversation_text=_conversation_text(messages, latest, history_text),
         full_history_available=bool(messages) or bool(history_text) or bool(source.get("full_history_available")),
         raw_payload=payload,

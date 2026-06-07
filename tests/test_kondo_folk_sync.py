@@ -6,9 +6,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from kondo_folk_sync.ai import AIAnalyzer
+from kondo_folk_sync.ai import AIAnalyzer, _event_prompt
 from kondo_folk_sync.config import Settings, TeamUser
-from kondo_folk_sync.folk import FolkClient, FolkRateLimitError, _folk_datetime, _status_for_analysis
+from kondo_folk_sync.folk import FolkClient, FolkRateLimitError, _crm_content, _folk_datetime, _status_for_analysis
 from kondo_folk_sync.models import AIAnalysis, normalize_kondo_payload
 from kondo_folk_sync.service import _process_payload, _should_skip_existing, create_app
 from kondo_folk_sync.store import SyncStore
@@ -42,6 +42,7 @@ def test_normalize_real_kondo_webhook_payload_shape() -> None:
             "contact_company": "Example Carrier",
             "conversation_latest_content": "Hi Jessica, wanted to share what we're building.",
             "conversation_latest_timestamp": "2026-05-08T20:58:15.902Z",
+            "conversation_status": "waiting_for_their_reply",
             "kondo_url": "https://app.trykondo.com/inboxes/all/example",
             "kondo_note": "",
             "kondo_labels": [{"kondo_label_id": "other", "kondo_label_name": "Other"}],
@@ -57,6 +58,41 @@ def test_normalize_real_kondo_webhook_payload_shape() -> None:
     assert event.company == "Example Carrier"
     assert event.kondo_labels == ["Other"]
     assert event.latest_message == "Hi Jessica, wanted to share what we're building."
+    assert event.latest_message_direction == "user"
+    assert event.conversation_status == "waiting_for_their_reply"
+
+
+def test_normalize_full_history_uses_latest_message_sender() -> None:
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/prospect",
+            "fullName": "Prospect",
+            "messages": [
+                {"sender": "me", "text": "Are you interested in Recourse?"},
+                {"sender": "contact", "text": "Yes, happy to learn more."},
+            ],
+        }
+    )
+
+    assert event.latest_message == "Yes, happy to learn more."
+    assert event.latest_message_direction == "prospect"
+    assert event.full_history_available is True
+
+
+def test_event_prompt_includes_latest_message_direction() -> None:
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/prospect",
+            "fullName": "Prospect",
+            "latestMessage": "Are you interested in Recourse?",
+            "conversationStatus": "waiting_for_their_reply",
+        }
+    )
+
+    prompt = _event_prompt(event)
+
+    assert '"latest_message_direction": "user"' in prompt
+    assert '"conversation_status": "waiting_for_their_reply"' in prompt
 
 
 def test_store_skips_duplicate_mapping(tmp_path: Path) -> None:
@@ -82,6 +118,25 @@ def test_heuristic_ai_creates_followup() -> None:
     assert analysis.reply_owner == "user_owes_reply"
     assert analysis.follow_up_date is not None
     assert analysis.confidence >= 0.5
+
+
+def test_heuristic_ai_treats_user_latest_message_as_outbound_context() -> None:
+    settings = Settings(ai_provider="heuristic")
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/prospect",
+            "fullName": "Prospect",
+            "headline": "Claims Director at Example Mutual",
+            "latestMessage": "Hey, are you interested in Recourse?",
+            "conversationStatus": "waiting_for_their_reply",
+        }
+    )
+
+    analysis = asyncio.run(AIAnalyzer(settings).analyze(event))
+
+    assert event.latest_message_direction == "user"
+    assert analysis.reply_owner == "prospect_owes_reply"
+    assert "Follow up" in analysis.next_action
 
 
 def test_heuristic_ai_excludes_recruiters() -> None:
@@ -174,6 +229,29 @@ def test_dry_run_plans_folk_writes(tmp_path: Path) -> None:
     assert result["would_write"]["person"]["fullName"] == "Prospect"
     assert "groups" not in result["would_write"]["person"]
     assert result["would_write"]["reminder"] is not None
+
+
+def test_crm_content_labels_user_latest_message() -> None:
+    event = normalize_kondo_payload(
+        {
+            "linkedinUrl": "https://linkedin.com/in/prospect",
+            "fullName": "Prospect",
+            "headline": "Claims Director at Example Mutual",
+            "latestMessage": "Hey, are you interested in Recourse?",
+            "conversationStatus": "waiting_for_their_reply",
+        }
+    )
+    analysis = AIAnalysis.from_dict(
+        {
+            "summary": "User sent an outbound opener.",
+            "crm_note": "User asked whether the prospect is interested in Recourse.",
+            "group_category": "claims_professionals",
+        }
+    )
+
+    content = _crm_content(event, analysis)
+
+    assert "**Your latest message:** Hey, are you interested in Recourse?" in content
 
 
 def test_person_payload_adds_group_only_when_configured(tmp_path: Path) -> None:
@@ -813,6 +891,7 @@ def test_admin_priority_requires_token_and_returns_items(tmp_path: Path) -> None
             "linkedinUrl": "https://linkedin.com/in/prospect",
             "fullName": "Prospect",
             "latestMessage": "Can you send me details?",
+            "conversationStatus": "waiting_for_my_reply",
             "kondoUrl": "https://app.trykondo.com/inboxes/all/prospect",
         }
     )
@@ -894,6 +973,7 @@ def test_console_shows_daily_triage_contacts(tmp_path: Path) -> None:
             "linkedinUrl": "https://linkedin.com/in/prospect",
             "fullName": "Prospect",
             "latestMessage": "Can you send me details?",
+            "conversationStatus": "waiting_for_my_reply",
             "kondoUrl": "https://app.trykondo.com/inboxes/all/prospect",
         }
     )
@@ -931,6 +1011,8 @@ def test_console_shows_daily_triage_contacts(tmp_path: Path) -> None:
     assert row["console_state"] == "review"
     assert row["console_label"] == "Needs review"
     assert row["sync_depth"] == "latest_message"
+    assert row["latest_message_direction"] == "prospect"
+    assert row["conversation_status"] == "waiting_for_my_reply"
     assert state.json()["summary"]["needs_review"] == 1
     assert state.json()["status_counts"]["review_pending"] == 1
 
@@ -960,6 +1042,7 @@ def test_console_static_assets_are_served(tmp_path: Path) -> None:
     assert components.status_code == 200
     assert "export function renderTriageRow" in components.text
     assert "export function renderSyncStatus" in components.text
+    assert "Latest message from you" in components.text
 
 
 def test_console_allows_repush_for_synced_rows(tmp_path: Path) -> None:

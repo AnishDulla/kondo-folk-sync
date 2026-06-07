@@ -45,6 +45,8 @@ def _event_prompt(event: NormalizedKondoEvent) -> str:
             "kondo_notes": event.kondo_notes,
             "latest_conversation_timestamp": event.latest_conversation_timestamp,
             "latest_message": event.latest_message,
+            "latest_message_direction": event.latest_message_direction,
+            "conversation_status": event.conversation_status,
             "conversation_text": event.conversation_text,
         },
         indent=2,
@@ -143,8 +145,14 @@ class AIAnalyzer:
                 group_category="distribution_partners",
                 group_reason="Conversation appears to be recruiter, personal, or otherwise unrelated to Recourse prospecting.",
             )
-        prospect_asked = "?" in (event.latest_message or "") and not _looks_like_user_message(event.latest_message)
-        user_owes = prospect_asked or any(
+        latest_from_user = event.latest_message_direction == "user"
+        prospect_asked = (
+            event.latest_message_direction != "user"
+            and "?" in (event.latest_message or "")
+            and not _looks_like_user_message(event.latest_message)
+        )
+        user_owes = not latest_from_user and (
+            prospect_asked or any(
             phrase in text
             for phrase in (
                 "can you send",
@@ -153,6 +161,7 @@ class AIAnalyzer:
                 "interested",
                 "let's talk",
                 "lets talk",
+            )
             )
         )
         if user_owes:
@@ -166,7 +175,16 @@ class AIAnalyzer:
             next_action = "Follow up if there is no reply by the reminder date."
             stage = "active_conversation"
 
-        summary_source = event.conversation_text or event.latest_message or "Kondo conversation synced."
+        latest_prefix = {
+            "user": "Your latest message",
+            "prospect": "Prospect latest message",
+            "unknown": "Latest message",
+        }.get(event.latest_message_direction, "Latest message")
+        summary_source = (
+            event.conversation_text
+            or (f"{latest_prefix}: {event.latest_message}" if event.latest_message else None)
+            or "Kondo conversation synced."
+        )
         summary = " ".join(summary_source.split())[:700]
         context = []
         if event.kondo_notes:

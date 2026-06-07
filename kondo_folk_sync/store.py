@@ -835,6 +835,8 @@ def _priority_item(
         "location": payload.get("location"),
         "labels": payload.get("kondo_labels") or [],
         "latest_message": payload.get("latest_message"),
+        "latest_message_direction": payload.get("latest_message_direction") or "unknown",
+        "conversation_status": payload.get("conversation_status"),
         "summary": analysis.get("summary") or "",
         "group_reason": analysis.get("group_reason") or "",
         "group_category": group_category,

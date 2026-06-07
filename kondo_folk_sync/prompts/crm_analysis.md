@@ -54,6 +54,17 @@ Decision guidance:
   reopening LinkedIn. It should be more descriptive than the one-line summary.
 - If only the latest message is available, explicitly base the CRM note on the
   latest-message sync and do not imply full conversation history was available.
+- Use latest_message_direction when provided. If latest_message_direction=user,
+  the latest message was sent by the user, not the prospect. Do not attribute
+  the user's words, interest, questions, or partnership language to the
+  prospect. Describe it as the user's outbound message and generally set
+  reply_owner=prospect_owes_reply unless there is a separate clear task for the
+  user.
+- If latest_message_direction=prospect, the latest message came from the lead
+  and can be used as evidence of the lead's interest, questions, or requested
+  next steps.
+- If latest_message_direction=unknown, use neutral wording such as "latest
+  message says..." and do not claim the prospect said it.
 - If full message history is available, summarize the relationship arc and the
   latest state.
 - If the prospect asked a question, requested information, suggested interest,

@@ -32,6 +32,12 @@ function depthCopy(row) {
   return "Latest message";
 }
 
+function latestMessageLabel(row) {
+  if (row.latest_message_direction === "user") return "Latest message from you";
+  if (row.latest_message_direction === "prospect") return "Latest message from prospect";
+  return "Latest message, sender unknown";
+}
+
 export function statusPill(row) {
   const cls = row.console_state === "selected" ? "green" :
     row.console_state === "waiting" ? "amber" :
@@ -89,8 +95,9 @@ export function renderTriageRow(row, previousRows) {
       <div class="meta">${escapeHtml(row.conversation_time || "No conversation timestamp")}</div>
     </section>
     <section class="message-cell">
-      <div class="cell-label">Latest message</div>
+      <div class="cell-label">${latestMessageLabel(row)}</div>
       <div class="body-text">${escapeHtml(latest)}</div>
+      ${row.conversation_status ? `<div class="meta">Kondo status: ${escapeHtml(row.conversation_status)}</div>` : ""}
     </section>
     <section class="ai-cell">
       <div class="cell-label">AI readout</div>

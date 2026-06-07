@@ -270,7 +270,12 @@ def _crm_content(event: NormalizedKondoEvent, analysis: AIAnalysis) -> str:
     if analysis.follow_up_date:
         sections.append(f"**Follow-up date:** {analysis.follow_up_date}")
     if event.latest_message:
-        sections.append(f"**Latest message:** {event.latest_message}")
+        latest_label = {
+            "user": "Your latest message",
+            "prospect": "Prospect latest message",
+            "unknown": "Latest message, sender unknown",
+        }.get(event.latest_message_direction, "Latest message, sender unknown")
+        sections.append(f"**{latest_label}:** {event.latest_message}")
     if event.kondo_url:
         sections.append(f"**Kondo:** {event.kondo_url}")
     if event.linkedin_url:
