@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from kondo_folk_sync.ai import AIAnalyzer
-from kondo_folk_sync.config import Settings
+from kondo_folk_sync.config import Settings, TeamUser
 from kondo_folk_sync.folk import FolkClient, FolkRateLimitError, _folk_datetime, _status_for_analysis
 from kondo_folk_sync.models import AIAnalysis, normalize_kondo_payload
 from kondo_folk_sync.service import _process_payload, _should_skip_existing, create_app
@@ -1181,6 +1181,121 @@ def test_full_history_arrival_auto_upgrades_selected_latest(tmp_path: Path) -> N
     assert row["sync_depth"] == "full_history"
     assert state.json()["summary"]["selected_latest"] == 0
     assert state.json()["summary"]["selected_full"] == 1
+
+
+def test_team_webhooks_are_scoped_by_user_and_secret(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "sync.db",
+        dry_run=True,
+        ai_provider="heuristic",
+        review_mode=True,
+        team_users=(
+            TeamUser("anish", "Anish", "anish-admin", "anish-hook"),
+            TeamUser("teammate", "Teammate", "team-admin", "team-hook"),
+        ),
+    )
+    client = TestClient(create_app(settings))
+    payload = {
+        "linkedinUrl": "https://linkedin.com/in/shared-prospect",
+        "fullName": "Shared Prospect",
+        "headline": "Claims Director",
+        "latestMessage": "Can you send me details?",
+    }
+
+    rejected = client.post(
+        "/webhooks/kondo/teammate",
+        json=payload,
+        headers={"x-api-key": "anish-hook"},
+    )
+    anish = client.post(
+        "/webhooks/kondo/anish",
+        json=payload,
+        headers={"x-api-key": "anish-hook"},
+    )
+    teammate = client.post(
+        "/webhooks/kondo/teammate",
+        json=payload,
+        headers={"x-api-key": "team-hook"},
+    )
+
+    assert rejected.status_code == 401
+    assert anish.status_code == 200
+    assert teammate.status_code == 200
+    assert anish.json()["idempotency_key"].startswith("anish:")
+    assert teammate.json()["idempotency_key"].startswith("teammate:")
+
+
+def test_team_consoles_only_see_their_own_rows(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "sync.db",
+        dry_run=True,
+        ai_provider="heuristic",
+        review_mode=True,
+        team_users=(
+            TeamUser("anish", "Anish", "anish-admin", "anish-hook"),
+            TeamUser("teammate", "Teammate", "team-admin", "team-hook"),
+        ),
+    )
+    client = TestClient(create_app(settings))
+    anish_payload = {
+        "linkedinUrl": "https://linkedin.com/in/anish-prospect",
+        "fullName": "Anish Prospect",
+        "headline": "Claims Director",
+        "latestMessage": "Can you send me details?",
+    }
+    teammate_payload = {
+        "linkedinUrl": "https://linkedin.com/in/team-prospect",
+        "fullName": "Team Prospect",
+        "headline": "Claims Director",
+        "latestMessage": "Can you send me details?",
+    }
+    client.post("/sync/manual/anish", json=anish_payload)
+    client.post("/sync/manual/teammate", json=teammate_payload)
+    client.post("/admin/anish/process", headers={"x-admin-token": "anish-admin"})
+    client.post("/admin/teammate/process", headers={"x-admin-token": "team-admin"})
+
+    anish_state = client.get("/admin/anish/console-state", headers={"x-admin-token": "anish-admin"})
+    teammate_state = client.get("/admin/teammate/console-state", headers={"x-admin-token": "team-admin"})
+    cross_auth = client.get("/admin/teammate/console-state", headers={"x-admin-token": "anish-admin"})
+
+    assert cross_auth.status_code == 401
+    assert [row["full_name"] for row in anish_state.json()["rows"]] == ["Anish Prospect"]
+    assert [row["full_name"] for row in teammate_state.json()["rows"]] == ["Team Prospect"]
+
+
+def test_team_shared_linkedin_url_keeps_separate_review_state(tmp_path: Path) -> None:
+    settings = Settings(
+        database_path=tmp_path / "sync.db",
+        dry_run=True,
+        ai_provider="heuristic",
+        review_mode=True,
+        team_users=(
+            TeamUser("anish", "Anish", "anish-admin", "anish-hook"),
+            TeamUser("teammate", "Teammate", "team-admin", "team-hook"),
+        ),
+    )
+    client = TestClient(create_app(settings))
+    payload = {
+        "linkedinUrl": "https://linkedin.com/in/same-person",
+        "fullName": "Same Person",
+        "headline": "Claims Director",
+        "latestMessage": "Can you send me details?",
+    }
+    anish = client.post("/sync/manual/anish", json=payload).json()
+    teammate = client.post("/sync/manual/teammate", json=payload).json()
+    client.post("/admin/anish/process", headers={"x-admin-token": "anish-admin"})
+    client.post("/admin/teammate/process", headers={"x-admin-token": "team-admin"})
+    client.post(
+        f"/admin/anish/stage/{anish['idempotency_key']}",
+        headers={"x-admin-token": "anish-admin"},
+    )
+
+    anish_state = client.get("/admin/anish/console-state", headers={"x-admin-token": "anish-admin"})
+    teammate_state = client.get("/admin/teammate/console-state", headers={"x-admin-token": "team-admin"})
+
+    assert anish_state.json()["rows"][0]["console_state"] == "selected"
+    assert teammate_state.json()["rows"][0]["console_state"] == "review"
+    assert teammate["idempotency_key"].startswith("teammate:")
 
 
 def test_admin_reprocess_replays_stored_payload(tmp_path: Path) -> None:

@@ -44,6 +44,40 @@ FOLK_GROUP_DISTRIBUTION_PARTNERS_ID=<optional category group id>
 FOLK_GROUP_TPAS_SUBROGATION_ATTORNEYS_ID=<optional category group id>
 ```
 
+For a shared team deployment, keep one `FOLK_API_KEY` for the shared folk
+workspace and replace the single webhook/admin secrets with per-user config:
+
+```bash
+KONDO_FOLK_USERS_JSON='[
+  {
+    "slug": "anish",
+    "name": "Anish",
+    "admin_token": "<anish console token>",
+    "webhook_secret": "<anish kondo webhook secret>"
+  },
+  {
+    "slug": "teammate",
+    "name": "Teammate",
+    "admin_token": "<teammate console token>",
+    "webhook_secret": "<teammate kondo webhook secret>"
+  }
+]'
+```
+
+Team URLs:
+
+```text
+https://<render-service>.onrender.com/console/anish?token=<anish-console-token>
+https://<render-service>.onrender.com/webhooks/kondo/anish
+
+https://<render-service>.onrender.com/console/teammate?token=<teammate-console-token>
+https://<render-service>.onrender.com/webhooks/kondo/teammate
+```
+
+Each user sees only their own Kondo review queue. Both users write to the same
+folk workspace. The service adds LinkedIn owner attribution to synced CRM notes
+for team users.
+
 After deployment:
 
 ```text

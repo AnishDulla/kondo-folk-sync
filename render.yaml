@@ -37,6 +37,8 @@ services:
         sync: false
       - key: KONDO_FOLK_ADMIN_TOKEN
         sync: false
+      - key: KONDO_FOLK_USERS_JSON
+        sync: false
       - key: FOLK_API_KEY
         sync: false
       - key: FOLK_GROUP_ID

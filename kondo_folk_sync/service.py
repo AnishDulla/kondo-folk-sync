@@ -13,7 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .ai import AIAnalyzer
-from .config import Settings, settings
+from .config import Settings, TeamUser, settings
 from .folk import FolkClient, FolkRateLimitError
 from .models import AIAnalysis, normalize_kondo_payload
 from .store import SyncStore
@@ -79,7 +79,19 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         x_admin_token: str | None = Header(default=None),
     ) -> HTMLResponse:
         _require_admin(app_settings, token or x_admin_token)
-        return HTMLResponse(_console_html(app_settings, store, token, notice))
+        return HTMLResponse(_console_html(app_settings, store, token, notice, user=_default_user(app_settings)))
+
+    @app.get("/console/{user_slug}", response_class=HTMLResponse)
+    async def user_console(
+        user_slug: str,
+        request: Request,
+        token: str | None = None,
+        notice: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> HTMLResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        return HTMLResponse(_console_html(app_settings, store, token, notice, user=user))
 
     @app.get("/admin/stats")
     async def admin_stats(
@@ -104,6 +116,39 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
             "retryable_events": store.retryable_events(
                 limit=25,
                 processing_timeout_seconds=app_settings.processing_timeout_seconds,
+            ),
+        }
+
+    @app.get("/admin/{user_slug}/stats")
+    async def user_admin_stats(
+        user_slug: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        return {
+            "user": {"slug": user.slug, "name": user.name},
+            "health": {
+                "ok": True,
+                "dry_run": app_settings.dry_run,
+                "ai_provider": app_settings.ai_provider,
+                "database": str(app_settings.database_path),
+                "reconcile_interval_minutes": app_settings.reconcile_interval_minutes,
+                "worker_enabled": app_settings.worker_enabled,
+                "review_mode": app_settings.review_mode,
+                "queue_depth": store.queue_depth(
+                    app_settings.processing_timeout_seconds,
+                    user_slug=user.slug,
+                ),
+                "processing_timeout_seconds": app_settings.processing_timeout_seconds,
+            },
+            "counts": store.status_counts(user_slug=user.slug),
+            "recent_events": store.recent_events(limit=25, user_slug=user.slug),
+            "retryable_events": store.retryable_events(
+                limit=25,
+                processing_timeout_seconds=app_settings.processing_timeout_seconds,
+                user_slug=user.slug,
             ),
         }
 
@@ -142,6 +187,22 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
             app_settings,
             store,
             limit=max(25, min(limit, 500)),
+        )
+
+    @app.get("/admin/{user_slug}/console-state")
+    async def user_admin_console_state(
+        user_slug: str,
+        limit: int = 250,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        return _console_state(
+            app_settings,
+            store,
+            limit=max(25, min(limit, 500)),
+            user=user,
         )
 
     @app.post("/admin/reprocess/{idempotency_key}", response_model=None)
@@ -285,6 +346,203 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
         result = {"status": "full_sync_requested", "idempotency_key": idempotency_key}
         return _action_response(request, token, result, "Marked one row for full-history sync.")
 
+    @app.post("/admin/{user_slug}/reprocess/{idempotency_key}", response_model=None)
+    async def user_admin_reprocess(
+        user_slug: str,
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        payload = store.get_event_payload(idempotency_key, user_slug=user.slug)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        result = _enqueue_payload(payload, store, force=True, user_slug=user.slug, scope_key=True)
+        return _action_response(request, token, result, "Requeued one stored payload.", user=user)
+
+    @app.post("/admin/{user_slug}/stage/{idempotency_key}", response_model=None)
+    async def user_admin_stage(
+        user_slug: str,
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        if store.get_event(idempotency_key, user_slug=user.slug) is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        store.stage_for_folk(idempotency_key, user_slug=user.slug)
+        result = {"status": "staged_for_folk", "idempotency_key": idempotency_key}
+        return _action_response(request, token, result, "Staged one row for the batch.", user=user)
+
+    @app.post("/admin/{user_slug}/stage-all", response_model=None)
+    async def user_admin_stage_all(
+        user_slug: str,
+        request: Request,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        count = store.stage_all_for_folk(user_slug=user.slug)
+        result = {"status": "staged_for_folk", "count": count}
+        return _action_response(request, token, result, f"Staged {count} pending row(s).", user=user)
+
+    @app.post("/admin/{user_slug}/send-staged", response_model=None)
+    async def user_admin_send_staged(
+        user_slug: str,
+        request: Request,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        count = store.queue_staged_for_folk(user_slug=user.slug)
+        result = {"status": "queued_for_folk", "count": count}
+        return _action_response(request, token, result, f"Queued {count} staged row(s) for folk.", user=user)
+
+    @app.post("/admin/{user_slug}/unstage/{idempotency_key}", response_model=None)
+    async def user_admin_unstage(
+        user_slug: str,
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        if store.get_event(idempotency_key, user_slug=user.slug) is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        store.unstage_for_folk(idempotency_key, user_slug=user.slug)
+        result = {"status": "unstaged", "idempotency_key": idempotency_key}
+        return _action_response(request, token, result, "Removed one row from the send batch.", user=user)
+
+    @app.post("/admin/{user_slug}/skip/{idempotency_key}", response_model=None)
+    async def user_admin_skip(
+        user_slug: str,
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        if store.get_event(idempotency_key, user_slug=user.slug) is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        store.skip_event(idempotency_key, user_slug=user.slug)
+        result = {"status": "excluded", "idempotency_key": idempotency_key}
+        return _action_response(request, token, result, "Skipped one contact.", user=user)
+
+    @app.post("/admin/{user_slug}/mark-relevant/{idempotency_key}", response_model=None)
+    async def user_admin_mark_relevant(
+        user_slug: str,
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        if store.get_event(idempotency_key, user_slug=user.slug) is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        form = await request.form()
+        store.mark_relevant(idempotency_key, group_category=str(form.get("group_category") or ""), user_slug=user.slug)
+        result = {"status": "review_pending", "idempotency_key": idempotency_key}
+        return _action_response(request, token, result, "Marked one contact relevant.", user=user)
+
+    @app.post("/admin/{user_slug}/group/{idempotency_key}", response_model=None)
+    async def user_admin_group(
+        user_slug: str,
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        if store.get_event(idempotency_key, user_slug=user.slug) is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        form = await request.form()
+        group_category = str(form.get("group_category") or "")
+        store.update_group_category(idempotency_key, group_category, user_slug=user.slug)
+        result = {"status": "group_updated", "idempotency_key": idempotency_key, "group_category": group_category}
+        return _action_response(request, token, result, "Updated one bucket.", user=user)
+
+    @app.post("/admin/{user_slug}/request-full-sync/{idempotency_key}", response_model=None)
+    async def user_admin_request_full_sync(
+        user_slug: str,
+        request: Request,
+        idempotency_key: str,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        if store.get_event(idempotency_key, user_slug=user.slug) is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        store.request_full_sync(idempotency_key, user_slug=user.slug)
+        result = {"status": "full_sync_requested", "idempotency_key": idempotency_key}
+        return _action_response(request, token, result, "Marked one row for full-history sync.", user=user)
+
+    @app.post("/admin/{user_slug}/reset-local-state", response_model=None)
+    async def user_admin_reset_local_state(
+        user_slug: str,
+        request: Request,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        form = await request.form()
+        if str(form.get("confirm") or "") != "RESET":
+            raise HTTPException(status_code=400, detail="Type RESET to clear local sync state")
+        store.reset_user(user.slug)
+        result = {"status": "reset", "message": f"local sync state cleared for {user.slug}"}
+        return _action_response(request, token, result, "Cleared local sync state.", user=user)
+
+    @app.post("/admin/{user_slug}/reconcile", response_model=None)
+    async def user_admin_reconcile(
+        user_slug: str,
+        request: Request,
+        limit: int = 25,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        result = await _process_queue(
+            store,
+            analyzer,
+            folk,
+            limit=min(limit, 100),
+            processing_timeout_seconds=app_settings.processing_timeout_seconds,
+            user_slug=user.slug,
+        )
+        return _action_response(request, token, result, f"Retried {result['count']} queued/retry item(s).", user=user)
+
+    @app.post("/admin/{user_slug}/process", response_model=None)
+    async def user_admin_process(
+        user_slug: str,
+        request: Request,
+        limit: int = 25,
+        token: str | None = None,
+        x_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any] | RedirectResponse:
+        user = _resolve_user(app_settings, user_slug)
+        _require_user_admin(app_settings, user, token or x_admin_token)
+        result = await _process_queue(
+            store,
+            analyzer,
+            folk,
+            limit=min(limit, 100),
+            processing_timeout_seconds=app_settings.processing_timeout_seconds,
+            user_slug=user.slug,
+        )
+        return _action_response(request, token, result, f"Processed {result['count']} queued item(s).", user=user)
+
     @app.post("/admin/reset-local-state", response_model=None)
     async def admin_reset_local_state(
         request: Request,
@@ -347,9 +605,30 @@ def create_app(app_settings: Settings = settings) -> FastAPI:
             raise HTTPException(status_code=400, detail="Expected JSON object")
         return _enqueue_payload(payload, store)
 
+    @app.post("/webhooks/kondo/{user_slug}")
+    async def user_kondo_webhook(
+        user_slug: str,
+        request: Request,
+        x_kondo_webhook_secret: str | None = Header(default=None),
+        x_api_key: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        user = _resolve_user(app_settings, user_slug)
+        provided_secret = x_kondo_webhook_secret or x_api_key
+        if user.webhook_secret and provided_secret != user.webhook_secret:
+            raise HTTPException(status_code=401, detail="Invalid webhook secret")
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Expected JSON object")
+        return _enqueue_payload(payload, store, user_slug=user.slug, scope_key=True)
+
     @app.post("/sync/manual")
     async def manual_sync(payload: dict[str, Any]) -> dict[str, Any]:
         return _enqueue_payload(payload, store)
+
+    @app.post("/sync/manual/{user_slug}")
+    async def user_manual_sync(user_slug: str, payload: dict[str, Any]) -> dict[str, Any]:
+        user = _resolve_user(app_settings, user_slug)
+        return _enqueue_payload(payload, store, user_slug=user.slug, scope_key=True)
 
     return app
 
@@ -358,9 +637,12 @@ def _enqueue_payload(
     payload: dict[str, Any],
     store: SyncStore,
     force: bool = False,
+    user_slug: str = "default",
+    scope_key: bool = False,
 ) -> dict[str, Any]:
     event = normalize_kondo_payload(payload)
-    existing = store.get_event(event.idempotency_key)
+    event_key = _event_key(event.idempotency_key, user_slug, scope_key)
+    existing = store.get_event(event_key, user_slug=user_slug)
     if (
         existing
         and not force
@@ -371,13 +653,21 @@ def _enqueue_payload(
     if existing and not force and _should_skip_existing(existing["status"], event.linkedin_url, dry_run=False):
         return {
             "status": "duplicate",
-            "idempotency_key": event.idempotency_key,
+            "idempotency_key": event_key,
             "previous_status": existing["status"],
         }
-    queued = store.queue_event(event.idempotency_key, event.linkedin_url, event.to_dict(), force=force)
+    queued = store.queue_event(
+        event_key,
+        event.linkedin_url,
+        event.to_dict(),
+        force=force,
+        user_slug=user_slug,
+    )
     return {
         "status": queued["status"],
-        "idempotency_key": event.idempotency_key,
+        "idempotency_key": event_key,
+        "raw_idempotency_key": event.idempotency_key,
+        "user_slug": user_slug,
         "linkedin_url": event.linkedin_url,
     }
 
@@ -389,11 +679,14 @@ async def _process_payload(
     folk: FolkClient,
     force: bool = False,
     bypass_review: bool = False,
+    idempotency_key: str | None = None,
+    user_slug: str = "default",
 ) -> dict[str, Any]:
     event = normalize_kondo_payload(payload)
-    existing = store.get_event(event.idempotency_key)
+    event_key = idempotency_key or event.idempotency_key
+    existing = store.get_event(event_key, user_slug=user_slug)
     if existing and force:
-        store.delete_event(event.idempotency_key)
+        store.delete_event(event_key, user_slug=user_slug)
         existing = None
     if (
         existing
@@ -402,18 +695,18 @@ async def _process_payload(
     ):
         return {
             "status": "duplicate",
-            "idempotency_key": event.idempotency_key,
+            "idempotency_key": event_key,
             "previous_status": existing["status"],
         }
 
-    store.start_event(event.idempotency_key, event.linkedin_url, event.to_dict())
+    store.start_event(event_key, event.linkedin_url, event.to_dict(), user_slug=user_slug)
     try:
         if not event.linkedin_url:
             result = {"status": "held_for_review", "reason": "missing_linkedin_url"}
-            store.finish_event(event.idempotency_key, "held_for_review", result=result)
-            return {"idempotency_key": event.idempotency_key, **result}
+            store.finish_event(event_key, "held_for_review", result=result, user_slug=user_slug)
+            return {"idempotency_key": event_key, **result}
 
-        stored_analysis = store.get_event_analysis(event.idempotency_key)
+        stored_analysis = store.get_event_analysis(event_key, user_slug=user_slug)
         if bypass_review and stored_analysis:
             analysis = AIAnalysis.from_dict(stored_analysis)
         else:
@@ -425,13 +718,14 @@ async def _process_payload(
                 "group_reason": analysis.group_reason,
             }
             store.finish_event(
-                event.idempotency_key,
+                event_key,
                 "excluded",
                 analysis=analysis.to_dict(),
                 result=result,
+                user_slug=user_slug,
             )
             return {
-                "idempotency_key": event.idempotency_key,
+                "idempotency_key": event_key,
                 "analysis": analysis.to_dict(),
                 "result": result,
             }
@@ -442,42 +736,46 @@ async def _process_payload(
                 "has_full_history": event.has_full_history,
             }
             store.finish_event(
-                event.idempotency_key,
+                event_key,
                 "review_pending",
                 analysis=analysis.to_dict(),
                 result=result,
+                user_slug=user_slug,
             )
             upgraded_to_selected = False
             if event.has_full_history:
                 upgraded_to_selected = store.auto_stage_full_history_if_latest_selected(
                     event.linkedin_url,
-                    event.idempotency_key,
+                    event_key,
+                    user_slug=user_slug,
                 )
                 if upgraded_to_selected:
                     result["status"] = "staged_for_folk"
                     result["reason"] = "full_history_auto_upgraded_selected_batch"
             return {
-                "idempotency_key": event.idempotency_key,
+                "idempotency_key": event_key,
                 "analysis": analysis.to_dict(),
                 "result": result,
             }
-        result = await folk.sync(event, analysis)
+        write_analysis = _analysis_with_owner(analysis, user_slug)
+        result = await folk.sync(event, write_analysis)
         status = str(result.get("status") or "synced")
         store.finish_event(
-            event.idempotency_key,
+            event_key,
             status,
-            analysis=analysis.to_dict(),
+            analysis=write_analysis.to_dict(),
             result=result,
+            user_slug=user_slug,
         )
         return {
-            "idempotency_key": event.idempotency_key,
-            "analysis": analysis.to_dict(),
+            "idempotency_key": event_key,
+            "analysis": write_analysis.to_dict(),
             "result": result,
         }
     except FolkRateLimitError as exc:
-        store.defer_event(event.idempotency_key, str(exc), exc.retry_at)
+        store.defer_event(event_key, str(exc), exc.retry_at, user_slug=user_slug)
         return {
-            "idempotency_key": event.idempotency_key,
+            "idempotency_key": event_key,
             "result": {
                 "status": "retry_wait",
                 "retry_at": exc.retry_at.astimezone(UTC).isoformat(),
@@ -485,7 +783,7 @@ async def _process_payload(
             },
         }
     except Exception as exc:
-        store.finish_event(event.idempotency_key, "error", error=str(exc))
+        store.finish_event(event_key, "error", error=str(exc), user_slug=user_slug)
         raise
 
 
@@ -501,6 +799,21 @@ def _should_skip_existing(status: str, linkedin_url: str | None, dry_run: bool) 
     if status in {"review_pending", "full_sync_requested", "staged_for_folk", "queued_for_folk"}:
         return True
     return False
+
+
+def _analysis_with_owner(analysis: AIAnalysis, user_slug: str) -> AIAnalysis:
+    if user_slug == "default":
+        return analysis
+    data = analysis.to_dict()
+    owner_line = f"LinkedIn owner: {user_slug}"
+    crm_note = str(data.get("crm_note") or "")
+    if owner_line not in crm_note:
+        data["crm_note"] = f"{owner_line}\n\n{crm_note}".strip()
+    context = list(data.get("important_context") or [])
+    if owner_line not in context:
+        context.append(owner_line)
+    data["important_context"] = context
+    return AIAnalysis.from_dict(data)
 
 
 async def _reconcile_loop(
@@ -544,14 +857,19 @@ async def _process_queue(
     folk: FolkClient,
     limit: int = 25,
     processing_timeout_seconds: int = 120,
+    user_slug: str | None = None,
 ) -> dict[str, Any]:
     attempted: list[dict[str, Any]] = []
     for _ in range(limit):
-        event = store.next_queued_event(processing_timeout_seconds=processing_timeout_seconds)
+        event = store.next_queued_event(
+            processing_timeout_seconds=processing_timeout_seconds,
+            user_slug=user_slug,
+        )
         if event is None:
             break
         idempotency_key = str(event["idempotency_key"])
-        payload = store.get_event_payload(idempotency_key)
+        event_user_slug = str(event.get("user_slug") or "default")
+        payload = store.get_event_payload(idempotency_key, user_slug=event_user_slug)
         if payload is None:
             attempted.append(
                 {
@@ -560,7 +878,7 @@ async def _process_queue(
                 }
             )
             continue
-        store.mark_processing(idempotency_key)
+        store.mark_processing(idempotency_key, user_slug=event_user_slug)
         try:
             result = await _process_payload(
                 payload,
@@ -568,6 +886,8 @@ async def _process_queue(
                 analyzer,
                 folk,
                 bypass_review=str(event.get("status") or "") == "queued_for_folk",
+                idempotency_key=idempotency_key,
+                user_slug=event_user_slug,
             )
             status = result.get("result", {}).get("status") or result.get("status")
             attempted.append({"idempotency_key": idempotency_key, "status": status})
@@ -596,24 +916,73 @@ def _require_admin(app_settings: Settings, provided_token: str | None) -> None:
         )
 
 
+def _default_user(app_settings: Settings) -> TeamUser:
+    if app_settings.team_users:
+        return app_settings.team_users[0]
+    return TeamUser(
+        slug="default",
+        name="Default",
+        admin_token=app_settings.admin_token,
+        webhook_secret=app_settings.webhook_secret,
+    )
+
+
+def _resolve_user(app_settings: Settings, user_slug: str) -> TeamUser:
+    normalized = user_slug.strip().lower()
+    for user in app_settings.team_users:
+        if user.slug == normalized:
+            return user
+    if not app_settings.team_users and normalized == "default":
+        return _default_user(app_settings)
+    raise HTTPException(status_code=404, detail="Unknown sync user")
+
+
+def _require_user_admin(
+    app_settings: Settings,
+    user: TeamUser,
+    provided_token: str | None,
+) -> None:
+    expected_token = user.admin_token or app_settings.admin_token
+    if expected_token:
+        if provided_token != expected_token:
+            raise HTTPException(status_code=401, detail="Invalid admin token")
+        return
+    if not app_settings.dry_run:
+        raise HTTPException(
+            status_code=403,
+            detail="An admin token is required for user consoles in live mode",
+        )
+
+
+def _event_key(raw_idempotency_key: str, user_slug: str, scope_key: bool) -> str:
+    if not scope_key or user_slug == "default":
+        return raw_idempotency_key
+    prefix = f"{user_slug}:"
+    if raw_idempotency_key.startswith(prefix):
+        return raw_idempotency_key
+    return f"{prefix}{raw_idempotency_key}"
+
+
 def _action_response(
     request: Request,
     token: str | None,
     result: dict[str, Any],
     notice: str,
+    user: TeamUser | None = None,
 ) -> dict[str, Any] | RedirectResponse:
     if token:
-        return RedirectResponse(_console_url(token, notice), status_code=303)
+        return RedirectResponse(_console_url(token, notice, user=user), status_code=303)
     return result
 
 
-def _console_url(token: str | None, notice: str | None = None) -> str:
+def _console_url(token: str | None, notice: str | None = None, user: TeamUser | None = None) -> str:
     parts: list[str] = []
     if token:
         parts.append(f"token={quote(token)}")
     if notice:
         parts.append(f"notice={quote(notice)}")
-    return "/console" + (f"?{'&'.join(parts)}" if parts else "")
+    path = f"/console/{quote(user.slug)}" if user and user.slug != "default" else "/console"
+    return path + (f"?{'&'.join(parts)}" if parts else "")
 
 
 def _console_html(app_settings: Settings, store: SyncStore, token: str | None, notice: str | None = None) -> str:
@@ -1228,8 +1597,14 @@ def _event_row(event: dict[str, Any], token_query: str) -> str:
 </tr>"""
 
 
-def _console_state(app_settings: Settings, store: SyncStore, limit: int = 250) -> dict[str, Any]:
-    rows = [_console_row(item) for item in store.triage_events(limit=limit)]
+def _console_state(
+    app_settings: Settings,
+    store: SyncStore,
+    limit: int = 250,
+    user: TeamUser | None = None,
+) -> dict[str, Any]:
+    active_user = user or _default_user(app_settings)
+    rows = [_console_row(item) for item in store.triage_events(limit=limit, user_slug=active_user.slug)]
     rows = _dedupe_console_rows(rows)
     summary = {
         "needs_review": sum(1 for row in rows if row["console_state"] in {"review", "full_ready"}),
@@ -1243,7 +1618,7 @@ def _console_state(app_settings: Settings, store: SyncStore, limit: int = 250) -
         "waiting": sum(1 for row in rows if row["console_state"] == "waiting"),
         "sent": sum(1 for row in rows if row["console_state"] == "sent"),
         "skipped": sum(1 for row in rows if row["console_state"] == "skipped"),
-        "queue_depth": store.queue_depth(app_settings.processing_timeout_seconds),
+        "queue_depth": store.queue_depth(app_settings.processing_timeout_seconds, user_slug=active_user.slug),
     }
     last_event_at = max((str(row.get("updated_at") or "") for row in rows), default="")
     revision = "|".join(
@@ -1258,6 +1633,7 @@ def _console_state(app_settings: Settings, store: SyncStore, limit: int = 250) -
     return {
         "mode": _mode_label(app_settings),
         "ai_provider": app_settings.ai_provider,
+        "user": {"slug": active_user.slug, "name": active_user.name},
         "summary": summary,
         "rows": rows,
         "last_event_at": last_event_at,
@@ -1346,8 +1722,19 @@ def _state_sort_rank(state: str) -> int:
     }.get(state, 0)
 
 
-def _console_html(app_settings: Settings, store: SyncStore, token: str | None, notice: str | None = None) -> str:
-    stats_href = "/admin/stats" + (f"?token={quote(token)}" if token else "")
+def _console_html(
+    app_settings: Settings,
+    store: SyncStore,
+    token: str | None,
+    notice: str | None = None,
+    user: TeamUser | None = None,
+) -> str:
+    active_user = user or _default_user(app_settings)
+    is_scoped = active_user.slug != "default" or bool(app_settings.team_users)
+    admin_prefix = f"/admin/{active_user.slug}" if is_scoped else "/admin"
+    stats_href = (
+        f"/admin/{active_user.slug}/stats" if is_scoped else "/admin/stats"
+    ) + (f"?token={quote(token)}" if token else "")
     page = """<!doctype html>
 <html lang="en">
 <head>
@@ -1626,7 +2013,7 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
     <div class="topbar-inner">
       <div class="brand">
         <h1>Kondo folk Sync Console</h1>
-        <p>Daily LinkedIn triage. Nothing goes to folk until it is in the selected batch.</p>
+        <p>__USER_NAME__ LinkedIn triage. Nothing goes to folk until it is in the selected batch.</p>
       </div>
       <div class="health-strip">
         <span class="pill">__MODE__</span>
@@ -1658,8 +2045,8 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
         <details class="advanced">
           <summary>Advanced queue tools</summary>
           <section class="advanced-actions">
-            <button class="ghost" data-action="/admin/process" type="button">Process Incoming Queue</button>
-            <button class="ghost" data-action="/admin/reconcile" type="button">Retry Failed/Due Work</button>
+            <button class="ghost" data-action="/process" type="button">Process Incoming Queue</button>
+            <button class="ghost" data-action="/reconcile" type="button">Retry Failed/Due Work</button>
             <a class="button-link ghost" href="__STATS_HREF__" target="_blank" rel="noreferrer">JSON Stats</a>
           </section>
           <section class="reset-row">
@@ -1685,8 +2072,9 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
   <script>
     const TOKEN = __TOKEN_JSON__;
     const NOTICE = __NOTICE_JSON__;
-    const stateUrl = () => `/admin/console-state${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
-    const actionUrl = (path) => `${path}${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
+    const ADMIN_PREFIX = __ADMIN_PREFIX_JSON__;
+    const stateUrl = () => `${ADMIN_PREFIX}/console-state${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
+    const actionUrl = (path) => `${ADMIN_PREFIX}${path}${TOKEN ? `?token=${encodeURIComponent(TOKEN)}` : ""}`;
     let currentState = null;
     let activeFilter = "review";
     let searchTerm = "";
@@ -1763,17 +2151,17 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
       const key = encodeURIComponent(row.idempotency_key);
       const actions = [];
       if (row.console_state === "review" || row.console_state === "full_ready") {
-        actions.push(`<button class="green-btn" data-post="/admin/stage/${key}">${row.sync_depth === "full_history" ? "Select Full" : "Select Latest"}</button>`);
-        if (row.sync_depth !== "full_history") actions.push(`<button class="amber-btn" data-post="/admin/request-full-sync/${key}">Request Full</button>`);
-        actions.push(`<button class="ghost" data-post="/admin/skip/${key}">Skip</button>`);
+        actions.push(`<button class="green-btn" data-post="/stage/${key}">${row.sync_depth === "full_history" ? "Select Full" : "Select Latest"}</button>`);
+        if (row.sync_depth !== "full_history") actions.push(`<button class="amber-btn" data-post="/request-full-sync/${key}">Request Full</button>`);
+        actions.push(`<button class="ghost" data-post="/skip/${key}">Skip</button>`);
       } else if (row.console_state === "selected") {
-        actions.push(`<button class="ghost" data-post="/admin/unstage/${key}">Remove</button>`);
-        if (row.sync_depth !== "full_history") actions.push(`<button class="amber-btn" data-post="/admin/request-full-sync/${key}">Request Full</button>`);
+        actions.push(`<button class="ghost" data-post="/unstage/${key}">Remove</button>`);
+        if (row.sync_depth !== "full_history") actions.push(`<button class="amber-btn" data-post="/request-full-sync/${key}">Request Full</button>`);
       } else if (row.console_state === "waiting") {
         if (row.kondo_url) actions.push(`<a class="button-link amber-btn" href="${escapeHtml(row.kondo_url)}" target="_blank" rel="noreferrer">Open Kondo Full Sync</a>`);
-        actions.push(`<button class="ghost" data-post="/admin/stage/${key}">Use Latest Anyway</button>`);
+        actions.push(`<button class="ghost" data-post="/stage/${key}">Use Latest Anyway</button>`);
       } else if (row.console_state === "sent") {
-        actions.push(`<button class="ghost" data-post="/admin/stage/${key}">Select to Resend</button>`);
+        actions.push(`<button class="ghost" data-post="/stage/${key}">Select to Resend</button>`);
       } else if (row.console_state === "skipped") {
         actions.push(`<button class="ghost" data-relevant="${key}">Mark Relevant</button>`);
       }
@@ -1864,7 +2252,7 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
           <strong>${escapeHtml(row.full_name || "Unknown contact")}</strong>
           <span class="muted">${row.sync_depth === "full_history" ? "Full conversation" : "Latest message"}</span>
         </div>
-        <button class="ghost" data-post="/admin/unstage/${encodeURIComponent(row.idempotency_key)}">Remove</button>
+        <button class="ghost" data-post="/unstage/${encodeURIComponent(row.idempotency_key)}">Remove</button>
       </div>`).join("");
     }
 
@@ -1920,7 +2308,7 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
         const body = new FormData();
         const row = currentState.rows.find((item) => item.idempotency_key === decodeURIComponent(target.dataset.relevant));
         body.append("group_category", row?.group_category || "claims_professionals");
-        try { await postAction(`/admin/mark-relevant/${target.dataset.relevant}`, body); toast("Marked relevant."); } catch (error) { toast(error.message); }
+      try { await postAction(`/mark-relevant/${target.dataset.relevant}`, body); toast("Marked relevant."); } catch (error) { toast(error.message); }
       }
     });
 
@@ -1934,24 +2322,24 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
       if (!target.dataset || !target.dataset.group) return;
       const body = new FormData();
       body.append("group_category", target.value);
-      try { await postAction(`/admin/group/${encodeURIComponent(target.dataset.group)}`, body); toast("Bucket updated."); } catch (error) { toast(error.message); }
+      try { await postAction(`/group/${encodeURIComponent(target.dataset.group)}`, body); toast("Bucket updated."); } catch (error) { toast(error.message); }
     });
 
     sendBatchBtn.addEventListener("click", async () => {
-      try { await postAction("/admin/send-staged"); toast("Selected batch queued for folk."); } catch (error) { toast(error.message); }
+      try { await postAction("/send-staged"); toast("Selected batch queued for folk."); } catch (error) { toast(error.message); }
     });
 
     document.getElementById("select-visible").addEventListener("click", async () => {
       if (!currentState) return;
       const visible = currentState.rows.filter(rowMatches).filter((row) => row.console_state === "review" || row.console_state === "full_ready");
-      for (const row of visible) await postAction(`/admin/stage/${encodeURIComponent(row.idempotency_key)}`);
+      for (const row of visible) await postAction(`/stage/${encodeURIComponent(row.idempotency_key)}`);
       toast(`Selected ${visible.length} visible contact(s).`);
     });
 
     document.getElementById("reset-state").addEventListener("click", async () => {
       const body = new FormData();
       body.append("confirm", document.getElementById("reset-confirm").value);
-      try { await postAction("/admin/reset-local-state", body); toast("Local sync state cleared."); } catch (error) { toast(error.message); }
+      try { await postAction("/reset-local-state", body); toast("Local sync state cleared."); } catch (error) { toast(error.message); }
     });
 
     if (NOTICE) {
@@ -1969,6 +2357,8 @@ def _console_html(app_settings: Settings, store: SyncStore, token: str | None, n
         .replace("__MODE__", html.escape(_mode_label(app_settings)))
         .replace("__AI__", html.escape(app_settings.ai_provider))
         .replace("__STATS_HREF__", html.escape(stats_href))
+        .replace("__USER_NAME__", html.escape(active_user.name))
+        .replace("__ADMIN_PREFIX_JSON__", json.dumps(admin_prefix))
     )
 
 

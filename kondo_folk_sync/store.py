@@ -51,6 +51,7 @@ class SyncStore:
             self._ensure_column(conn, "processed_events", "locked_at", "text")
             self._ensure_column(conn, "processed_events", "stage_from_status", "text")
             self._ensure_column(conn, "processed_events", "manual_override_json", "text")
+            self._ensure_column(conn, "processed_events", "user_slug", "text not null default 'default'")
             self._ensure_column(conn, "people_map", "folk_note_id", "text")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -61,31 +62,31 @@ class SyncStore:
         if column not in columns:
             conn.execute(f"alter table {table} add column {column} {definition}")
 
-    def get_event(self, idempotency_key: str) -> dict[str, Any] | None:
+    def get_event(self, idempotency_key: str, user_slug: str = "default") -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(
-                "select * from processed_events where idempotency_key = ?",
-                (idempotency_key,),
+                "select * from processed_events where idempotency_key = ? and user_slug = ?",
+                (idempotency_key, user_slug),
             ).fetchone()
         return dict(row) if row else None
 
-    def get_event_payload(self, idempotency_key: str) -> dict[str, Any] | None:
-        event = self.get_event(idempotency_key)
+    def get_event_payload(self, idempotency_key: str, user_slug: str = "default") -> dict[str, Any] | None:
+        event = self.get_event(idempotency_key, user_slug=user_slug)
         if not event:
             return None
         return json.loads(str(event["payload_json"]))
 
-    def get_event_analysis(self, idempotency_key: str) -> dict[str, Any] | None:
-        event = self.get_event(idempotency_key)
+    def get_event_analysis(self, idempotency_key: str, user_slug: str = "default") -> dict[str, Any] | None:
+        event = self.get_event(idempotency_key, user_slug=user_slug)
         if not event or not event.get("analysis_json"):
             return None
         return _loads_dict(event["analysis_json"])
 
-    def delete_event(self, idempotency_key: str) -> None:
+    def delete_event(self, idempotency_key: str, user_slug: str = "default") -> None:
         with self._connect() as conn:
             conn.execute(
-                "delete from processed_events where idempotency_key = ?",
-                (idempotency_key,),
+                "delete from processed_events where idempotency_key = ? and user_slug = ?",
+                (idempotency_key, user_slug),
             )
 
     def reset_all(self) -> None:
@@ -93,18 +94,23 @@ class SyncStore:
             conn.execute("delete from processed_events")
             conn.execute("delete from people_map")
 
+    def reset_user(self, user_slug: str) -> None:
+        with self._connect() as conn:
+            conn.execute("delete from processed_events where user_slug = ?", (user_slug,))
+
     def queue_event(
         self,
         idempotency_key: str,
         linkedin_url: str | None,
         payload: dict[str, Any],
         force: bool = False,
+        user_slug: str = "default",
     ) -> dict[str, Any]:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             existing = conn.execute(
-                "select * from processed_events where idempotency_key = ?",
-                (idempotency_key,),
+                "select * from processed_events where idempotency_key = ? and user_slug = ?",
+                (idempotency_key, user_slug),
             ).fetchone()
             if existing and not force:
                 return dict(existing)
@@ -114,68 +120,78 @@ class SyncStore:
                     update processed_events
                     set linkedin_url = ?, status = ?, payload_json = ?, analysis_json = null,
                         result_json = null, error = null, attempts = 0, next_attempt_at = null,
-                        locked_at = null, updated_at = ?
-                    where idempotency_key = ?
+                        locked_at = null, user_slug = ?, updated_at = ?
+                    where idempotency_key = ? and user_slug = ?
                     """,
                     (
                         linkedin_url,
                         "queued",
                         json.dumps(payload, sort_keys=True, default=str),
+                        user_slug,
                         now,
                         idempotency_key,
+                        user_slug,
                     ),
                 )
             else:
                 conn.execute(
                     """
                     insert into processed_events (
-                        idempotency_key, linkedin_url, status, payload_json, created_at, updated_at
-                    ) values (?, ?, ?, ?, ?, ?)
+                        idempotency_key, linkedin_url, status, payload_json, user_slug, created_at, updated_at
+                    ) values (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         idempotency_key,
                         linkedin_url,
                         "queued",
                         json.dumps(payload, sort_keys=True, default=str),
+                        user_slug,
                         now,
                         now,
                     ),
                 )
             row = conn.execute(
-                "select * from processed_events where idempotency_key = ?",
-                (idempotency_key,),
+                "select * from processed_events where idempotency_key = ? and user_slug = ?",
+                (idempotency_key, user_slug),
             ).fetchone()
         return dict(row)
 
-    def start_event(self, idempotency_key: str, linkedin_url: str | None, payload: dict[str, Any]) -> None:
+    def start_event(
+        self,
+        idempotency_key: str,
+        linkedin_url: str | None,
+        payload: dict[str, Any],
+        user_slug: str = "default",
+    ) -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
                 insert or ignore into processed_events (
-                    idempotency_key, linkedin_url, status, payload_json, created_at, updated_at
-                ) values (?, ?, ?, ?, ?, ?)
+                    idempotency_key, linkedin_url, status, payload_json, user_slug, created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     idempotency_key,
                     linkedin_url,
                     "processing",
                     json.dumps(payload, sort_keys=True, default=str),
+                    user_slug,
                     now,
                     now,
                 ),
             )
 
-    def mark_processing(self, idempotency_key: str) -> None:
+    def mark_processing(self, idempotency_key: str, user_slug: str = "default") -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
                 update processed_events
                 set status = 'processing', attempts = attempts + 1, locked_at = ?, updated_at = ?
-                where idempotency_key = ?
+                where idempotency_key = ? and user_slug = ?
                 """,
-                (now, now, idempotency_key),
+                (now, now, idempotency_key, user_slug),
             )
 
     def finish_event(
@@ -185,6 +201,7 @@ class SyncStore:
         analysis: dict[str, Any] | None = None,
         result: dict[str, Any] | None = None,
         error: str | None = None,
+        user_slug: str = "default",
     ) -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
@@ -193,7 +210,7 @@ class SyncStore:
                 update processed_events
                 set status = ?, analysis_json = ?, result_json = ?, error = ?,
                     next_attempt_at = null, locked_at = null, updated_at = ?
-                where idempotency_key = ?
+                where idempotency_key = ? and user_slug = ?
                 """,
                 (
                     status,
@@ -202,10 +219,17 @@ class SyncStore:
                     error,
                     now,
                     idempotency_key,
+                    user_slug,
                 ),
             )
 
-    def defer_event(self, idempotency_key: str, error: str, next_attempt_at: datetime) -> None:
+    def defer_event(
+        self,
+        idempotency_key: str,
+        error: str,
+        next_attempt_at: datetime,
+        user_slug: str = "default",
+    ) -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute(
@@ -213,12 +237,12 @@ class SyncStore:
                 update processed_events
                 set status = 'retry_wait', error = ?, next_attempt_at = ?, locked_at = null,
                     updated_at = ?
-                where idempotency_key = ?
+                where idempotency_key = ? and user_slug = ?
                 """,
-                (error, next_attempt_at.astimezone(UTC).isoformat(), now, idempotency_key),
+                (error, next_attempt_at.astimezone(UTC).isoformat(), now, idempotency_key, user_slug),
             )
 
-    def stage_for_folk(self, idempotency_key: str) -> None:
+    def stage_for_folk(self, idempotency_key: str, user_slug: str = "default") -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute(
@@ -226,12 +250,12 @@ class SyncStore:
                 update processed_events
                 set status = 'staged_for_folk', error = null, next_attempt_at = null,
                     locked_at = null, stage_from_status = status, updated_at = ?
-                where idempotency_key = ?
+                where idempotency_key = ? and user_slug = ?
                 """,
-                (now, idempotency_key),
+                (now, idempotency_key, user_slug),
             )
 
-    def stage_many_for_folk(self, idempotency_keys: list[str]) -> int:
+    def stage_many_for_folk(self, idempotency_keys: list[str], user_slug: str = "default") -> int:
         if not idempotency_keys:
             return 0
         now = datetime.now(UTC).isoformat()
@@ -243,14 +267,15 @@ class SyncStore:
                 set status = 'staged_for_folk', error = null, next_attempt_at = null,
                     locked_at = null, stage_from_status = status, updated_at = ?
                 where idempotency_key in ({placeholders})
+                  and user_slug = ?
                   and analysis_json is not null
                   and status != 'excluded'
                 """,
-                (now, *idempotency_keys),
+                (now, *idempotency_keys, user_slug),
             )
         return int(cursor.rowcount)
 
-    def stage_all_for_folk(self) -> int:
+    def stage_all_for_folk(self, user_slug: str = "default") -> int:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             cursor = conn.execute(
@@ -259,13 +284,14 @@ class SyncStore:
                 set status = 'staged_for_folk', error = null, next_attempt_at = null,
                     locked_at = null, stage_from_status = status, updated_at = ?
                 where status = 'review_pending'
+                  and user_slug = ?
                   and analysis_json is not null
                 """,
-                (now,),
+                (now, user_slug),
             )
         return int(cursor.rowcount)
 
-    def queue_staged_for_folk(self) -> int:
+    def queue_staged_for_folk(self, user_slug: str = "default") -> int:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             cursor = conn.execute(
@@ -274,13 +300,14 @@ class SyncStore:
                 set status = 'queued_for_folk', error = null, next_attempt_at = null,
                     locked_at = null, stage_from_status = null, updated_at = ?
                 where status = 'staged_for_folk'
+                  and user_slug = ?
                   and analysis_json is not null
                 """,
-                (now,),
+                (now, user_slug),
             )
         return int(cursor.rowcount)
 
-    def unstage_for_folk(self, idempotency_key: str) -> None:
+    def unstage_for_folk(self, idempotency_key: str, user_slug: str = "default") -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute(
@@ -290,24 +317,25 @@ class SyncStore:
                     stage_from_status = null,
                     updated_at = ?
                 where idempotency_key = ?
+                  and user_slug = ?
                   and status = 'staged_for_folk'
                 """,
-                (now, idempotency_key),
+                (now, idempotency_key, user_slug),
             )
 
-    def request_full_sync(self, idempotency_key: str) -> None:
+    def request_full_sync(self, idempotency_key: str, user_slug: str = "default") -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute(
                 """
                 update processed_events
                 set status = 'full_sync_requested', updated_at = ?
-                where idempotency_key = ?
+                where idempotency_key = ? and user_slug = ?
                 """,
-                (now, idempotency_key),
+                (now, idempotency_key, user_slug),
             )
 
-    def skip_event(self, idempotency_key: str) -> None:
+    def skip_event(self, idempotency_key: str, user_slug: str = "default") -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             conn.execute(
@@ -320,7 +348,7 @@ class SyncStore:
                     locked_at = null,
                     stage_from_status = null,
                     updated_at = ?
-                where idempotency_key = ?
+                where idempotency_key = ? and user_slug = ?
                 """,
                 (
                     json.dumps(
@@ -332,10 +360,16 @@ class SyncStore:
                     ),
                     now,
                     idempotency_key,
+                    user_slug,
                 ),
             )
 
-    def mark_relevant(self, idempotency_key: str, group_category: str | None = None) -> None:
+    def mark_relevant(
+        self,
+        idempotency_key: str,
+        group_category: str | None = None,
+        user_slug: str = "default",
+    ) -> None:
         now = datetime.now(UTC).isoformat()
         allowed_groups = {
             "claims_professionals",
@@ -344,8 +378,8 @@ class SyncStore:
         }
         with self._connect() as conn:
             row = conn.execute(
-                "select analysis_json from processed_events where idempotency_key = ?",
-                (idempotency_key,),
+                "select analysis_json from processed_events where idempotency_key = ? and user_slug = ?",
+                (idempotency_key, user_slug),
             ).fetchone()
             if not row:
                 return
@@ -373,7 +407,7 @@ class SyncStore:
                     locked_at = null,
                     stage_from_status = null,
                     updated_at = ?
-                where idempotency_key = ?
+                where idempotency_key = ? and user_slug = ?
                 """,
                 (
                     json.dumps(analysis, sort_keys=True, default=str),
@@ -387,10 +421,16 @@ class SyncStore:
                     ),
                     now,
                     idempotency_key,
+                    user_slug,
                 ),
             )
 
-    def update_group_category(self, idempotency_key: str, group_category: str) -> None:
+    def update_group_category(
+        self,
+        idempotency_key: str,
+        group_category: str,
+        user_slug: str = "default",
+    ) -> None:
         allowed_groups = {
             "claims_professionals",
             "distribution_partners",
@@ -401,8 +441,8 @@ class SyncStore:
         now = datetime.now(UTC).isoformat()
         with self._connect() as conn:
             row = conn.execute(
-                "select analysis_json, manual_override_json from processed_events where idempotency_key = ?",
-                (idempotency_key,),
+                "select analysis_json, manual_override_json from processed_events where idempotency_key = ? and user_slug = ?",
+                (idempotency_key, user_slug),
             ).fetchone()
             if not row:
                 return
@@ -417,13 +457,14 @@ class SyncStore:
                 set analysis_json = ?,
                     manual_override_json = ?,
                     updated_at = ?
-                where idempotency_key = ?
+                where idempotency_key = ? and user_slug = ?
                 """,
                 (
                     json.dumps(analysis, sort_keys=True, default=str),
                     json.dumps(override, sort_keys=True, default=str),
                     now,
                     idempotency_key,
+                    user_slug,
                 ),
             )
 
@@ -431,6 +472,7 @@ class SyncStore:
         self,
         linkedin_url: str | None,
         full_history_key: str,
+        user_slug: str = "default",
     ) -> bool:
         if not linkedin_url:
             return False
@@ -440,9 +482,9 @@ class SyncStore:
                 """
                 select status, stage_from_status
                 from processed_events
-                where idempotency_key = ?
+                where idempotency_key = ? and user_slug = ?
                 """,
-                (full_history_key,),
+                (full_history_key, user_slug),
             ).fetchone()
             if not full_row:
                 return False
@@ -453,10 +495,11 @@ class SyncStore:
                 from processed_events
                 where linkedin_url = ?
                   and idempotency_key != ?
+                  and user_slug = ?
                   and status = 'staged_for_folk'
                 limit 1
                 """,
-                (linkedin_url, full_history_key),
+                (linkedin_url, full_history_key, user_slug),
             ).fetchone()
             if not same_row_was_selected and not selected_latest:
                 return False
@@ -468,8 +511,9 @@ class SyncStore:
                         stage_from_status = null,
                         updated_at = ?
                     where idempotency_key = ?
+                      and user_slug = ?
                     """,
-                    (now, selected_latest["idempotency_key"]),
+                    (now, selected_latest["idempotency_key"], user_slug),
                 )
             conn.execute(
                 """
@@ -478,8 +522,9 @@ class SyncStore:
                     stage_from_status = coalesce(stage_from_status, 'review_pending'),
                     updated_at = ?
                 where idempotency_key = ?
+                  and user_slug = ?
                 """,
-                (now, full_history_key),
+                (now, full_history_key, user_slug),
             )
         return True
 
@@ -532,22 +577,25 @@ class SyncStore:
                 (linkedin_url, folk_person_id, folk_note_id, now, now),
             )
 
-    def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
+    def recent_events(self, limit: int = 50, user_slug: str | None = None) -> list[dict[str, Any]]:
+        where = "where user_slug = ?" if user_slug else ""
+        params: tuple[Any, ...] = (user_slug, limit) if user_slug else (limit,)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 select idempotency_key, linkedin_url, status, error, attempts, next_attempt_at,
-                    created_at, updated_at
+                    user_slug, created_at, updated_at
                 from processed_events
+                {where}
                 order by created_at desc
                 limit ?
                 """,
-                (limit,),
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def priority_events(self, limit: int = 25) -> list[dict[str, Any]]:
-        items = self.triage_events(limit=max(limit * 4, limit), sort_by="score")
+    def priority_events(self, limit: int = 25, user_slug: str = "default") -> list[dict[str, Any]]:
+        items = self.triage_events(limit=max(limit * 4, limit), sort_by="score", user_slug=user_slug)
         return [item for item in items if item["score"] > 0][:limit]
 
     def triage_events(
@@ -555,24 +603,26 @@ class SyncStore:
         limit: int = 100,
         since_hours: int = 0,
         sort_by: str = "conversation_time",
+        user_slug: str = "default",
     ) -> list[dict[str, Any]]:
         since = (datetime.now(UTC) - timedelta(hours=since_hours)).isoformat() if since_hours > 0 else None
         with self._connect() as conn:
             rows = conn.execute(
                 """
                 select idempotency_key, linkedin_url, status, payload_json, analysis_json,
-                    manual_override_json, updated_at
+                    manual_override_json, user_slug, updated_at
                 from processed_events
                 where status in (
                     'review_pending', 'full_sync_requested', 'queued_for_folk',
                     'staged_for_folk',
                     'synced', 'dry_run', 'excluded'
                 )
+                  and user_slug = ?
                   and analysis_json is not null
                 order by updated_at desc
                 limit ?
                 """,
-                (max(limit * 4, limit, 1),),
+                (user_slug, max(limit * 4, limit, 1)),
             ).fetchall()
 
         items: list[dict[str, Any]] = []
@@ -588,73 +638,114 @@ class SyncStore:
             items.sort(key=lambda item: (item["conversation_time"], item["updated_at"]), reverse=True)
         return items[:limit]
 
-    def status_counts(self) -> dict[str, int]:
+    def status_counts(self, user_slug: str | None = None) -> dict[str, int]:
+        where = "where user_slug = ?" if user_slug else ""
+        params: tuple[Any, ...] = (user_slug,) if user_slug else ()
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 select status, count(*) as count
                 from processed_events
+                {where}
                 group by status
                 order by status
-                """
+                """,
+                params,
             ).fetchall()
         return {str(row["status"]): int(row["count"]) for row in rows}
 
-    def retryable_events(self, limit: int = 25, processing_timeout_seconds: int = 120) -> list[dict[str, Any]]:
+    def retryable_events(
+        self,
+        limit: int = 25,
+        processing_timeout_seconds: int = 120,
+        user_slug: str | None = None,
+    ) -> list[dict[str, Any]]:
         now = datetime.now(UTC).isoformat()
         stale_processing = (datetime.now(UTC) - timedelta(seconds=processing_timeout_seconds)).isoformat()
+        user_filter = "and user_slug = ?" if user_slug else ""
+        params: tuple[Any, ...] = (
+            stale_processing,
+            now,
+            user_slug,
+            limit,
+        ) if user_slug else (stale_processing, now, limit)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 select idempotency_key, linkedin_url, status, error, attempts, next_attempt_at,
-                    created_at, updated_at
+                    user_slug, created_at, updated_at
                 from processed_events
-                where status = 'error'
+                where (
+                   status = 'error'
                    or status = 'queued_for_folk'
                    or (status = 'processing' and (locked_at is null or locked_at <= ?))
                    or (status = 'retry_wait' and (next_attempt_at is null or next_attempt_at <= ?))
+                )
+                   {user_filter}
                 order by updated_at asc
                 limit ?
                 """,
-                (stale_processing, now, limit),
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def next_queued_event(self, processing_timeout_seconds: int = 120) -> dict[str, Any] | None:
+    def next_queued_event(
+        self,
+        processing_timeout_seconds: int = 120,
+        user_slug: str | None = None,
+    ) -> dict[str, Any] | None:
         now = datetime.now(UTC).isoformat()
         stale_processing = (datetime.now(UTC) - timedelta(seconds=processing_timeout_seconds)).isoformat()
+        user_filter = "and user_slug = ?" if user_slug else ""
+        params: tuple[Any, ...] = (
+            stale_processing,
+            now,
+            user_slug,
+        ) if user_slug else (stale_processing, now)
         with self._connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 select *
                 from processed_events
-                where status = 'queued'
+                where (
+                   status = 'queued'
                    or status = 'queued_for_folk'
                    or status = 'error'
                    or (status = 'processing' and (locked_at is null or locked_at <= ?))
                    or (status = 'retry_wait' and (next_attempt_at is null or next_attempt_at <= ?))
+                )
+                   {user_filter}
                 order by created_at asc
                 limit 1
                 """,
-                (stale_processing, now),
+                params,
             ).fetchone()
         return dict(row) if row else None
 
-    def queue_depth(self, processing_timeout_seconds: int = 120) -> int:
+    def queue_depth(self, processing_timeout_seconds: int = 120, user_slug: str | None = None) -> int:
         now = datetime.now(UTC).isoformat()
         stale_processing = (datetime.now(UTC) - timedelta(seconds=processing_timeout_seconds)).isoformat()
+        user_filter = "and user_slug = ?" if user_slug else ""
+        params: tuple[Any, ...] = (
+            stale_processing,
+            now,
+            user_slug,
+        ) if user_slug else (stale_processing, now)
         with self._connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 select count(*) as count
                 from processed_events
-                where status = 'queued'
+                where (
+                   status = 'queued'
                    or status = 'queued_for_folk'
                    or status = 'error'
                    or (status = 'processing' and (locked_at is null or locked_at <= ?))
                    or (status = 'retry_wait' and (next_attempt_at is null or next_attempt_at <= ?))
+                )
+                   {user_filter}
                 """,
-                (stale_processing, now),
+                params,
             ).fetchone()
         return int(row["count"]) if row else 0
 
@@ -732,6 +823,7 @@ def _priority_item(
 
     return {
         "idempotency_key": row["idempotency_key"],
+        "user_slug": row.get("user_slug") or "default",
         "status": status,
         "sync_depth": sync_depth,
         "has_full_history": has_full_history,
